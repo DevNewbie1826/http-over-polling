@@ -1,5 +1,13 @@
 # http-over-polling
 
+[![CI](https://github.com/DevNewbie1826/http-over-polling/actions/workflows/ci.yml/badge.svg)](https://github.com/DevNewbie1826/http-over-polling/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/DevNewbie1826/http-over-polling/branch/master/graph/badge.svg)](https://codecov.io/gh/DevNewbie1826/http-over-polling)
+[![Go Report Card](https://goreportcard.com/badge/github.com/DevNewbie1826/http-over-polling)](https://goreportcard.com/report/github.com/DevNewbie1826/http-over-polling)
+[![Go Reference](https://pkg.go.dev/badge/github.com/DevNewbie1826/http-over-polling.svg)](https://pkg.go.dev/github.com/DevNewbie1826/http-over-polling)
+[![Go Version](https://img.shields.io/badge/go-1.25+-00ADD8?logo=go)](https://go.dev/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Examples Module](https://img.shields.io/badge/examples-separate%20module-0A7B83)](./examples)
+
 A `net/http`-compatible HTTP stack on top of `cloudwego/netpoll`.
 
 If you want to keep normal handlers and framework code, but cut idle-connection goroutine growth and explore poller-driven WebSocket handling, this repo is built to show that with runnable examples and repeatable benchmarks.
@@ -232,3 +240,12 @@ This project is strongest when described this way:
 - it gives you enough examples and benches to rerun the claims yourself
 
 That is more persuasive than a generic "faster than net/http" slogan, because the evidence is shipped with the code.
+
+## Acknowledgements
+
+This project references and learns from the ideas and implementations in:
+
+- `https://github.com/valyala/bytebufferpool`
+- `https://github.com/valyala/fasthttp/tree/master/tcplisten`
+
+Thanks to the authors and maintainers of those projects.

@@ -1,0 +1,44 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test core
+        run: go test ./... -covermode=atomic -coverprofile=coverage-core.out
+      - name: Upload core coverage
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage-core.out
+          flags: core
+          use_oidc: true
+
+  examples:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test examples
+        working-directory: examples
+        run: go test ./... -covermode=atomic -coverprofile=coverage-examples.out
+      - name: Upload examples coverage
+        uses: codecov/codecov-action@v5
+        with:
+          files: examples/coverage-examples.out
+          flags: examples
+          use_oidc: true
