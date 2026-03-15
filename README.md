@@ -1,7 +1,7 @@
 # http-over-polling
 
 [![CI](https://github.com/DevNewbie1826/http-over-polling/actions/workflows/ci.yml/badge.svg)](https://github.com/DevNewbie1826/http-over-polling/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/DevNewbie1826/http-over-polling/branch/master/graph/badge.svg)](https://codecov.io/gh/DevNewbie1826/http-over-polling)
+[![codecov](https://codecov.io/gh/DevNewbie1826/http-over-polling/graph/badge.svg?token=YBSXRMKKIR)](https://codecov.io/gh/DevNewbie1826/http-over-polling)
 [![Go Report Card](https://goreportcard.com/badge/github.com/DevNewbie1826/http-over-polling)](https://goreportcard.com/report/github.com/DevNewbie1826/http-over-polling)
 [![Go Reference](https://pkg.go.dev/badge/github.com/DevNewbie1826/http-over-polling.svg)](https://pkg.go.dev/github.com/DevNewbie1826/http-over-polling)
 [![Go Version](https://img.shields.io/badge/go-1.25+-00ADD8?logo=go)](https://go.dev/)
