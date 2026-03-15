@@ -32,3 +32,13 @@ func TestHopListenAndServeReturnsTransportError(t *testing.T) {
 		t.Fatal("ListenAndServe() error = nil, want non-nil")
 	}
 }
+
+func TestEventsCreatesCallbacksWithNilHandler(t *testing.T) {
+	events := Events(nil)
+	if events.OnOpen == nil {
+		t.Fatal("Events.OnOpen should not be nil")
+	}
+	if events.OnData == nil {
+		t.Fatal("Events.OnData should not be nil")
+	}
+}
