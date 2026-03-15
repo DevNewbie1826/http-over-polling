@@ -51,6 +51,38 @@ func TestCompositeBufferWriteAliasSharesBytes(t *testing.T) {
 	}
 }
 
+func TestCompositeBufferWriteClonesAndAppends(t *testing.T) {
+	var buf CompositeBuffer
+
+	first := []byte("hello")
+	n, err := buf.Write(first)
+	if err != nil {
+		t.Fatalf("Write(first) error = %v", err)
+	}
+	if n != len(first) {
+		t.Fatalf("Write(first) n = %d, want %d", n, len(first))
+	}
+	first[0] = 'j'
+
+	second := []byte(" world")
+	n, err = buf.Write(second)
+	if err != nil {
+		t.Fatalf("Write(second) error = %v", err)
+	}
+	if n != len(second) {
+		t.Fatalf("Write(second) n = %d, want %d", n, len(second))
+	}
+	second[1] = 'W'
+
+	got, err := io.ReadAll(&buf)
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if string(got) != "hello world" {
+		t.Fatalf("body = %q, want %q", got, "hello world")
+	}
+}
+
 func BenchmarkCompositeBufferWriteCloneReuse(b *testing.B) {
 	var buf CompositeBuffer
 	total := 0

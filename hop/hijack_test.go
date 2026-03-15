@@ -103,3 +103,39 @@ func TestResponseWriterSupportsLegacyHijackAndSetReadHandler(t *testing.T) {
 		t.Fatal("registered handler received unexpected readwriter")
 	}
 }
+
+func TestResponseWriterFlushBranches(t *testing.T) {
+	t.Run("returns early when hijacked", func(t *testing.T) {
+		buf := &flushBuffer{}
+		w := &httpResponseWriter{hijacked: true, writer: bufio.NewWriterSize(buf, 64)}
+		w.Flush()
+		if got := buf.String(); got != "" {
+			t.Fatalf("buffer = %q, want empty", got)
+		}
+	})
+
+	t.Run("returns early when writer is nil", func(t *testing.T) {
+		w := &httpResponseWriter{}
+		w.Flush()
+	})
+
+	t.Run("flushes pending body through chunked path", func(t *testing.T) {
+		buf := &flushBuffer{}
+		w := &httpResponseWriter{
+			protoMajor: 1,
+			protoMinor: 1,
+			request:    &http.Request{ProtoMajor: 1, ProtoMinor: 1, Header: make(http.Header)},
+			writer:     bufio.NewWriterSize(buf, 64),
+		}
+		if _, err := w.Write([]byte("A")); err != nil {
+			t.Fatalf("Write() error = %v", err)
+		}
+		if _, err := w.Write([]byte("B")); err != nil {
+			t.Fatalf("Write() error = %v", err)
+		}
+		w.Flush()
+		if out := buf.String(); !bytes.Contains([]byte(out), []byte("Transfer-Encoding: chunked\r\n")) {
+			t.Fatalf("missing chunked response after Flush(): %q", out)
+		}
+	})
+}
