@@ -274,20 +274,21 @@ func TestPackageListenAndServeCreatesServerAndServes(t *testing.T) {
 
 func TestServerShutdownWithNilLoopReturnsNil(t *testing.T) {
 	server := NewServer(Events{})
-	err := server.Shutdown(nil)
+	err := server.Shutdown(context.TODO())
 	if err != nil {
 		t.Fatalf("Shutdown() with nil loop error = %v, want nil", err)
 	}
 }
 
-func TestServerShutdownReplacesNilContextBeforeCallingLoop(t *testing.T) {
+func TestServerShutdownPassesNonNilContextToLoop(t *testing.T) {
 	loop := &shutdownCaptureLoop{}
 	server := &Server{loop: loop}
+	ctx := context.TODO()
 
-	if err := server.Shutdown(nil); err != nil {
-		t.Fatalf("Shutdown(nil) error = %v, want nil", err)
+	if err := server.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown(ctx) error = %v, want nil", err)
 	}
-	if loop.ctx == nil {
-		t.Fatal("Shutdown(nil) passed nil context to loop")
+	if loop.ctx != ctx {
+		t.Fatalf("Shutdown(ctx) passed %v, want %v", loop.ctx, ctx)
 	}
 }
