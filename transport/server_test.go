@@ -2,6 +2,7 @@ package transport
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -189,6 +190,33 @@ func TestHijackWithoutReadHandlerKeepsConnectionOwnedUntilClose(t *testing.T) {
 	}
 	if got := dispatches.Load(); got != 1 {
 		t.Fatalf("OnData dispatches = %d, want 1 after Hijack", got)
+	}
+}
+
+func TestNewServerAppliesOptions(t *testing.T) {
+	s := NewServer(Events{}, WithReadTimeout(time.Second), nil, WithWriteTimeout(2*time.Second), WithIdleTimeout(3*time.Second))
+	if s.opts.readTimeout != time.Second {
+		t.Fatalf("readTimeout = %v, want %v", s.opts.readTimeout, time.Second)
+	}
+	if s.opts.writeTimeout != 2*time.Second {
+		t.Fatalf("writeTimeout = %v, want %v", s.opts.writeTimeout, 2*time.Second)
+	}
+	if s.opts.idleTimeout != 3*time.Second {
+		t.Fatalf("idleTimeout = %v, want %v", s.opts.idleTimeout, 3*time.Second)
+	}
+}
+
+func TestPackageListenAndServeReturnsListenerError(t *testing.T) {
+	err := ListenAndServe("bad-addr", Events{})
+	if err == nil {
+		t.Fatal("ListenAndServe() error = nil, want non-nil")
+	}
+}
+
+func TestServerShutdownWithNilLoopReturnsNil(t *testing.T) {
+	s := NewServer(Events{})
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
 	}
 }
 
