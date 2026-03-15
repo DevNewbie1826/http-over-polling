@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   core:
@@ -24,7 +23,7 @@ jobs:
         with:
           files: coverage-core.out
           flags: core
-          use_oidc: true
+          token: ${{ secrets.CODECOV_TOKEN }}
 
   examples:
     runs-on: ubuntu-latest
@@ -41,4 +40,4 @@ jobs:
         with:
           files: examples/coverage-examples.out
           flags: examples
-          use_oidc: true
+          token: ${{ secrets.CODECOV_TOKEN }}
