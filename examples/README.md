@@ -9,6 +9,8 @@ The root module is the core library. This `examples/` module exists so you can:
 - verify framework compatibility without touching application code
 - reproduce the bundled `wrk` benchmark workflow
 
+> Platform note: these examples and scripts are currently intended for Linux and macOS. Windows is not a supported target at this time.
+
 ## Why this is a separate module
 
 `examples/` depends on the root module like a normal downstream consumer.

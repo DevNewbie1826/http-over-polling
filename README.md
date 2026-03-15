@@ -12,6 +12,8 @@ A `net/http`-compatible HTTP stack on top of `cloudwego/netpoll`.
 
 If you want to keep normal handlers and framework code, but cut idle-connection goroutine growth and explore poller-driven WebSocket handling, this repo is built to show that with runnable examples and repeatable benchmarks.
 
+> Platform note: the core transport path and bundled examples are currently intended for Linux and macOS. Windows is not a supported target at this time.
+
 ## Why it stands out
 
 | What you get | Why it matters |
