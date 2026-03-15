@@ -12,6 +12,20 @@ import (
 	"time"
 )
 
+type shutdownCaptureLoop struct {
+	ctx context.Context
+}
+
+func (l *shutdownCaptureLoop) Serve(net.Listener) error { return nil }
+
+func (l *shutdownCaptureLoop) Shutdown(ctx context.Context) error {
+	l.ctx = ctx
+	if ctx == nil {
+		return fmt.Errorf("nil context")
+	}
+	return nil
+}
+
 func TestIdleConnectionsDoNotSpawnPerConnGoroutines(t *testing.T) {
 	addr := nextAddr(t)
 	accepted := make(chan struct{}, 64)
@@ -213,13 +227,6 @@ func TestPackageListenAndServeReturnsListenerError(t *testing.T) {
 	}
 }
 
-func TestServerShutdownWithNilLoopReturnsNil(t *testing.T) {
-	s := NewServer(Events{})
-	if err := s.Shutdown(context.Background()); err != nil {
-		t.Fatalf("Shutdown() error = %v", err)
-	}
-}
-
 func nextAddr(t *testing.T) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -243,5 +250,44 @@ func waitForDialTarget(t *testing.T, addr string) {
 			t.Fatalf("server at %s did not become ready: %v", addr, err)
 		}
 		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func TestPackageListenAndServeCreatesServerAndServes(t *testing.T) {
+	addr := nextAddr(t)
+	serverReady := make(chan struct{}, 1)
+
+	go func() {
+		_ = ListenAndServe(addr, Events{
+			OnOpen: func(Conn) { serverReady <- struct{}{} },
+		})
+	}()
+
+	waitForDialTarget(t, addr)
+
+	select {
+	case <-serverReady:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for server to be ready")
+	}
+}
+
+func TestServerShutdownWithNilLoopReturnsNil(t *testing.T) {
+	server := NewServer(Events{})
+	err := server.Shutdown(nil)
+	if err != nil {
+		t.Fatalf("Shutdown() with nil loop error = %v, want nil", err)
+	}
+}
+
+func TestServerShutdownReplacesNilContextBeforeCallingLoop(t *testing.T) {
+	loop := &shutdownCaptureLoop{}
+	server := &Server{loop: loop}
+
+	if err := server.Shutdown(nil); err != nil {
+		t.Fatalf("Shutdown(nil) error = %v, want nil", err)
+	}
+	if loop.ctx == nil {
+		t.Fatal("Shutdown(nil) passed nil context to loop")
 	}
 }

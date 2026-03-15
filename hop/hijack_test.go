@@ -138,4 +138,31 @@ func TestResponseWriterFlushBranches(t *testing.T) {
 			t.Fatalf("missing chunked response after Flush(): %q", out)
 		}
 	})
+
+	t.Run("flushes underlying writer in normal case", func(t *testing.T) {
+		tracker := &flushTrackingWriter{}
+		writer := &httpResponseWriter{
+			protoMajor:    1,
+			protoMinor:    1,
+			hijacked:      false,
+			headerWritten: true,
+			writer:        tracker,
+		}
+		writer.Flush()
+		if !tracker.flushed {
+			t.Fatal("Flush() did not call underlying writer Flush()")
+		}
+	})
+}
+
+type flushTrackingWriter struct {
+	flushed bool
+}
+
+func (f *flushTrackingWriter) Write(p []byte) (int, error)       { return len(p), nil }
+func (f *flushTrackingWriter) WriteByte(c byte) error            { return nil }
+func (f *flushTrackingWriter) WriteString(s string) (int, error) { return len(s), nil }
+func (f *flushTrackingWriter) Flush() error {
+	f.flushed = true
+	return nil
 }
