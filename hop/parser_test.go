@@ -9,6 +9,7 @@ import (
 	"testing"
 	"unsafe"
 
+	"github.com/DevNewbie1826/http-over-polling/internal/bytebufferpool"
 	httpparser "github.com/DevNewbie1826/http-over-polling/internal/parser"
 	"github.com/DevNewbie1826/http-over-polling/transport"
 )
@@ -253,6 +254,9 @@ func TestBuildsRequestWithConnectionAndUpgradeHeaders(t *testing.T) {
 	if got := captured.Header.Get("Upgrade"); got != "websocket" {
 		t.Fatalf("Upgrade header = %q, want %q", got, "websocket")
 	}
+	if captured.Close {
+		t.Fatal("request.Close = true, want false for Connection: Upgrade")
+	}
 }
 
 func TestBuildsChunkedRequest(t *testing.T) {
@@ -493,6 +497,221 @@ func TestFirstRequestWindowStopsAtFirstContentLengthRequestInPipeline(t *testing
 	}
 }
 
+func TestHasFoldedPrefix(t *testing.T) {
+	tests := []struct {
+		name   string
+		buf    []byte
+		prefix string
+		want   bool
+	}{
+		{name: "matches case-insensitive prefix", buf: []byte("Transfer-Encoding"), prefix: "transfer", want: true},
+		{name: "fails when shorter than prefix", buf: []byte("te"), prefix: "test", want: false},
+		{name: "fails on mismatched prefix", buf: []byte("content-length"), prefix: "transfer", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasFoldedPrefix(tt.buf, tt.prefix); got != tt.want {
+				t.Fatalf("hasFoldedPrefix(%q, %q) = %t, want %t", string(tt.buf), tt.prefix, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseHexBytes(t *testing.T) {
+	tests := []struct {
+		name  string
+		input []byte
+		want  int
+		ok    bool
+	}{
+		{name: "lowercase hex", input: []byte("1a"), want: 26, ok: true},
+		{name: "uppercase hex", input: []byte("FF"), want: 255, ok: true},
+		{name: "single zero", input: []byte("0"), want: 0, ok: true},
+		{name: "empty", input: nil, want: 0, ok: false},
+		{name: "invalid char", input: []byte("1g"), want: 0, ok: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := parseHexBytes(tt.input)
+			if ok != tt.ok || got != tt.want {
+				t.Fatalf("parseHexBytes(%q) = (%d, %t), want (%d, %t)", string(tt.input), got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
+func TestASCIIContainsTokenFold(t *testing.T) {
+	tests := []struct {
+		name  string
+		value []byte
+		token []byte
+		want  bool
+	}{
+		{name: "single token", value: []byte("chunked"), token: []byte("chunked"), want: true},
+		{name: "comma list with spaces", value: []byte("gzip, chunked"), token: []byte("chunked"), want: true},
+		{name: "case-insensitive", value: []byte("GZIP, CHUNKED"), token: []byte("chunked"), want: true},
+		{name: "absent token", value: []byte("gzip, deflate"), token: []byte("chunked"), want: false},
+		{name: "ignores leading commas and tabs", value: []byte("\t,  gzip"), token: []byte("gzip"), want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := asciiContainsTokenFold(tt.value, tt.token); got != tt.want {
+				t.Fatalf("asciiContainsTokenFold(%q, %q) = %t, want %t", string(tt.value), string(tt.token), got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFirstRequestWindowAdditionalBranches(t *testing.T) {
+	t.Run("incomplete header keeps full buffer", func(t *testing.T) {
+		input := []byte("GET / HTTP/1.1\r\nHost: example.com\r\n")
+		if got, want := firstRequestWindow(input), len(input); got != want {
+			t.Fatalf("firstRequestWindow() = %d, want %d", got, want)
+		}
+	})
+
+	t.Run("chunked with trailer returns full request", func(t *testing.T) {
+		input := []byte("POST /upload HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\nX-Trailer: yes\r\n\r\n")
+		if got, want := firstRequestWindow(input), len(input); got != want {
+			t.Fatalf("firstRequestWindow() = %d, want %d", got, want)
+		}
+	})
+
+	t.Run("invalid chunk-size keeps full buffer", func(t *testing.T) {
+		input := []byte("POST /upload HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\nz\r\nhello\r\n")
+		if got, want := firstRequestWindow(input), len(input); got != want {
+			t.Fatalf("firstRequestWindow() = %d, want %d", got, want)
+		}
+	})
+
+	t.Run("partial chunk body keeps full buffer", func(t *testing.T) {
+		input := []byte("POST /upload HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhel")
+		if got, want := firstRequestWindow(input), len(input); got != want {
+			t.Fatalf("firstRequestWindow() = %d, want %d", got, want)
+		}
+	})
+
+	t.Run("truncated content-length keeps full buffer", func(t *testing.T) {
+		input := []byte("POST /upload HTTP/1.1\r\nHost: example.com\r\nContent-Length: 10\r\n\r\nhello")
+		if got, want := firstRequestWindow(input), len(input); got != want {
+			t.Fatalf("firstRequestWindow() = %d, want %d", got, want)
+		}
+	})
+}
+
+func TestConnWriteLeaseRetainRelease(t *testing.T) {
+	orig := &connWriteLease{data: []byte("payload")}
+	retained, ok := orig.Retain().(*connWriteLease)
+	if !ok {
+		t.Fatalf("Retain() type = %T, want *connWriteLease", orig.Retain())
+	}
+	if retained == orig {
+		t.Fatal("Retain() returned the original lease pointer")
+	}
+	if got := string(retained.Bytes()); got != "payload" {
+		t.Fatalf("retained.Bytes() = %q, want %q", got, "payload")
+	}
+	orig.Release()
+	retained.Release()
+}
+
+func TestConnWriteFlusherFlush(t *testing.T) {
+	t.Run("empty buffer is no-op", func(t *testing.T) {
+		conn := newTestConn(nil)
+		flusher := &connWriteFlusher{conn: conn, buf: bytebufferpool.Get(), lease: &connWriteLease{}}
+		defer bytebufferpool.Put(flusher.buf)
+
+		if err := flusher.Flush(); err != nil {
+			t.Fatalf("Flush() error = %v", err)
+		}
+		if conn.writeLeaseCalls != 0 {
+			t.Fatalf("WriteLease calls = %d, want 0", conn.writeLeaseCalls)
+		}
+	})
+
+	t.Run("flush writes buffered bytes through lease path", func(t *testing.T) {
+		conn := newTestConn(nil)
+		flusher := &connWriteFlusher{conn: conn, buf: bytebufferpool.Get(), lease: &connWriteLease{}}
+		defer bytebufferpool.Put(flusher.buf)
+
+		if n, err := flusher.Write([]byte("he")); err != nil || n != 2 {
+			t.Fatalf("Write() = (%d, %v), want (2, nil)", n, err)
+		}
+		if err := flusher.WriteByte('l'); err != nil {
+			t.Fatalf("WriteByte() error = %v", err)
+		}
+		if n, err := flusher.WriteString("lo"); err != nil || n != 2 {
+			t.Fatalf("WriteString() = (%d, %v), want (2, nil)", n, err)
+		}
+		if err := flusher.Flush(); err != nil {
+			t.Fatalf("Flush() error = %v", err)
+		}
+		if conn.writeLeaseCalls != 1 {
+			t.Fatalf("WriteLease calls = %d, want 1", conn.writeLeaseCalls)
+		}
+		if got := conn.out.String(); got != "hello" {
+			t.Fatalf("written bytes = %q, want %q", got, "hello")
+		}
+		if len(flusher.buf.B) != 0 {
+			t.Fatalf("buffer length after Flush() = %d, want 0", len(flusher.buf.B))
+		}
+	})
+}
+
+func TestConnWriteFlusherWriteLease(t *testing.T) {
+	t.Run("write lease directly when no buffered header", func(t *testing.T) {
+		conn := newTestConn(nil)
+		flusher := &connWriteFlusher{conn: conn, buf: bytebufferpool.Get(), lease: &connWriteLease{}}
+		defer bytebufferpool.Put(flusher.buf)
+
+		n, err := flusher.WriteLease([]byte("body"))
+		if err != nil {
+			t.Fatalf("WriteLease() error = %v", err)
+		}
+		if n != len("body") {
+			t.Fatalf("WriteLease() bytes = %d, want %d", n, len("body"))
+		}
+		if conn.writeLeaseCalls != 1 {
+			t.Fatalf("WriteLease calls = %d, want 1", conn.writeLeaseCalls)
+		}
+		if conn.writeHeaderCalls != 0 {
+			t.Fatalf("WriteHeaderAndLease calls = %d, want 0", conn.writeHeaderCalls)
+		}
+	})
+
+	t.Run("write lease with buffered header uses header+lease path and resets buffer", func(t *testing.T) {
+		conn := newTestConn(nil)
+		flusher := &connWriteFlusher{conn: conn, buf: bytebufferpool.Get(), lease: &connWriteLease{}}
+		defer bytebufferpool.Put(flusher.buf)
+
+		if _, err := flusher.WriteString("HDR"); err != nil {
+			t.Fatalf("WriteString() error = %v", err)
+		}
+		n, err := flusher.WriteLease([]byte("BODY"))
+		if err != nil {
+			t.Fatalf("WriteLease() error = %v", err)
+		}
+		if n != len("HDRBODY") {
+			t.Fatalf("WriteLease() bytes = %d, want %d", n, len("HDRBODY"))
+		}
+		if conn.writeHeaderCalls != 1 {
+			t.Fatalf("WriteHeaderAndLease calls = %d, want 1", conn.writeHeaderCalls)
+		}
+		if conn.writeLeaseCalls != 1 {
+			t.Fatalf("WriteLease calls = %d, want 1", conn.writeLeaseCalls)
+		}
+		if got := conn.out.String(); got != "HDRBODY" {
+			t.Fatalf("written bytes = %q, want %q", got, "HDRBODY")
+		}
+		if len(flusher.buf.B) != 0 {
+			t.Fatalf("buffer length after WriteLease() = %d, want 0", len(flusher.buf.B))
+		}
+	})
+}
+
 func TestServeDrainsBufferedPipelineInSingleDispatch(t *testing.T) {
 	conn := newTestConn([]byte("GET /one HTTP/1.1\r\nHost: example.com\r\nConnection: keep-alive\r\n\r\nGET /two HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n"))
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -646,5 +865,97 @@ func TestZeroCopyBodyRetainsLeaseUntilBodyClose(t *testing.T) {
 	}
 	if conn.releases != wantReleases {
 		t.Fatalf("read lease releases = %d, want %d", conn.releases, wantReleases)
+	}
+}
+
+func TestHTTPVersionString(t *testing.T) {
+	tests := []struct {
+		name  string
+		major uint8
+		minor uint8
+		want  string
+	}{
+		{name: "http11", major: 1, minor: 1, want: "HTTP/1.1"},
+		{name: "http10", major: 1, minor: 0, want: "HTTP/1.0"},
+		{name: "http20", major: 2, minor: 0, want: "HTTP/2.0"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := httpVersionString(tt.major, tt.minor); got != tt.want {
+				t.Fatalf("httpVersionString(%d, %d) = %q, want %q", tt.major, tt.minor, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestShouldClose(t *testing.T) {
+	t.Run("http11 close token removes Connection when requested", func(t *testing.T) {
+		h := http.Header{"Connection": {"keep-alive, close"}}
+		got := shouldClose(1, 1, h, true)
+		if !got {
+			t.Fatal("shouldClose() = false, want true")
+		}
+		if _, ok := h["Connection"]; ok {
+			t.Fatalf("Connection header still present: %v", h["Connection"])
+		}
+	})
+
+	t.Run("http11 close token keeps header when not removing", func(t *testing.T) {
+		h := http.Header{"Connection": {"close"}}
+		got := shouldClose(1, 1, h, false)
+		if !got {
+			t.Fatal("shouldClose() = false, want true")
+		}
+		if gotHeader := h.Get("Connection"); gotHeader != "close" {
+			t.Fatalf("Connection header = %q, want %q", gotHeader, "close")
+		}
+	})
+
+	t.Run("http10 keep-alive keeps connection open", func(t *testing.T) {
+		h := http.Header{"Connection": {"keep-alive"}}
+		got := shouldClose(1, 0, h, true)
+		if got {
+			t.Fatal("shouldClose() = true, want false")
+		}
+		if gotHeader := h.Get("Connection"); gotHeader != "keep-alive" {
+			t.Fatalf("Connection header = %q, want %q", gotHeader, "keep-alive")
+		}
+	})
+
+	t.Run("invalid major closes regardless of headers", func(t *testing.T) {
+		h := http.Header{"Connection": {"keep-alive"}}
+		got := shouldClose(0, 9, h, true)
+		if !got {
+			t.Fatal("shouldClose() = false, want true")
+		}
+		if gotHeader := h.Get("Connection"); gotHeader != "keep-alive" {
+			t.Fatalf("Connection header = %q, want %q", gotHeader, "keep-alive")
+		}
+	})
+}
+
+func TestShouldCloseValue(t *testing.T) {
+	tests := []struct {
+		name       string
+		major      int
+		minor      int
+		connection string
+		want       bool
+	}{
+		{name: "invalid major", major: 0, minor: 1, connection: "keep-alive", want: true},
+		{name: "http11 defaults keep alive", major: 1, minor: 1, connection: "", want: false},
+		{name: "http11 close token", major: 1, minor: 1, connection: "Upgrade, close", want: true},
+		{name: "http10 without keep-alive", major: 1, minor: 0, connection: "", want: true},
+		{name: "http10 keep-alive", major: 1, minor: 0, connection: "keep-alive", want: false},
+		{name: "http10 close wins over keep-alive", major: 1, minor: 0, connection: "keep-alive, close", want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldCloseValue(tt.major, tt.minor, tt.connection); got != tt.want {
+				t.Fatalf("shouldCloseValue(%d, %d, %q) = %t, want %t", tt.major, tt.minor, tt.connection, got, tt.want)
+			}
+		})
 	}
 }

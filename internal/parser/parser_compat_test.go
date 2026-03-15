@@ -49,3 +49,36 @@ func TestParserEOFAfterCompletedResponseIsTrue(t *testing.T) {
 		t.Fatal("EOF() = false after completed no-body response, want true")
 	}
 }
+
+func TestParserUserDataRoundTrip(t *testing.T) {
+	p := New(REQUEST)
+	value := struct{ name string }{name: "ctx"}
+
+	p.SetUserData(value)
+
+	if got := p.GetUserData(); got != value {
+		t.Fatalf("GetUserData() = %#v, want %#v", got, value)
+	}
+}
+
+func TestParserGetUserDataDefaultsToNil(t *testing.T) {
+	p := New(REQUEST)
+	if got := p.GetUserData(); got != nil {
+		t.Fatalf("GetUserData() = %#v, want nil", got)
+	}
+}
+
+func TestParserReadyUpgradeDataRequiresCompleteUpgrade(t *testing.T) {
+	p := New(REQUEST)
+	if p.ReadyUpgradeData() {
+		t.Fatal("ReadyUpgradeData() = true before upgrade completion, want false")
+	}
+	p.Upgrade = true
+	if p.ReadyUpgradeData() {
+		t.Fatal("ReadyUpgradeData() = true without completion, want false")
+	}
+	p.messageCompleteCalled = true
+	if !p.ReadyUpgradeData() {
+		t.Fatal("ReadyUpgradeData() = false after upgrade completion, want true")
+	}
+}
