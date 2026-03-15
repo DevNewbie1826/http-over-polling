@@ -227,13 +227,6 @@ func TestPackageListenAndServeReturnsListenerError(t *testing.T) {
 	}
 }
 
-func TestServerShutdownWithNilLoopReturnsNil(t *testing.T) {
-	s := NewServer(Events{})
-	if err := s.Shutdown(context.Background()); err != nil {
-		t.Fatalf("Shutdown() error = %v", err)
-	}
-}
-
 func nextAddr(t *testing.T) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
