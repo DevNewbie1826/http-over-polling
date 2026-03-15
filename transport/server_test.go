@@ -245,3 +245,30 @@ func waitForDialTarget(t *testing.T, addr string) {
 		time.Sleep(25 * time.Millisecond)
 	}
 }
+
+func TestPackageListenAndServeCreatesServerAndServes(t *testing.T) {
+	addr := nextAddr(t)
+	serverReady := make(chan struct{}, 1)
+
+	go func() {
+		_ = ListenAndServe(addr, Events{
+			OnOpen: func(Conn) { serverReady <- struct{}{} },
+		})
+	}()
+
+	waitForDialTarget(t, addr)
+
+	select {
+	case <-serverReady:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for server to be ready")
+	}
+}
+
+func TestServerShutdownWithNilLoopReturnsNil(t *testing.T) {
+	server := NewServer(Events{})
+	err := server.Shutdown(nil)
+	if err != nil {
+		t.Fatalf("Shutdown() with nil loop error = %v, want nil", err)
+	}
+}
