@@ -84,5 +84,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.loop == nil {
 		return nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return s.loop.Shutdown(ctx)
 }

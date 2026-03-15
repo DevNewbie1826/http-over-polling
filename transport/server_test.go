@@ -12,6 +12,20 @@ import (
 	"time"
 )
 
+type shutdownCaptureLoop struct {
+	ctx context.Context
+}
+
+func (l *shutdownCaptureLoop) Serve(net.Listener) error { return nil }
+
+func (l *shutdownCaptureLoop) Shutdown(ctx context.Context) error {
+	l.ctx = ctx
+	if ctx == nil {
+		return fmt.Errorf("nil context")
+	}
+	return nil
+}
+
 func TestIdleConnectionsDoNotSpawnPerConnGoroutines(t *testing.T) {
 	addr := nextAddr(t)
 	accepted := make(chan struct{}, 64)
@@ -270,5 +284,17 @@ func TestServerShutdownWithNilLoopReturnsNil(t *testing.T) {
 	err := server.Shutdown(nil)
 	if err != nil {
 		t.Fatalf("Shutdown() with nil loop error = %v, want nil", err)
+	}
+}
+
+func TestServerShutdownReplacesNilContextBeforeCallingLoop(t *testing.T) {
+	loop := &shutdownCaptureLoop{}
+	server := &Server{loop: loop}
+
+	if err := server.Shutdown(nil); err != nil {
+		t.Fatalf("Shutdown(nil) error = %v, want nil", err)
+	}
+	if loop.ctx == nil {
+		t.Fatal("Shutdown(nil) passed nil context to loop")
 	}
 }
