@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"unsafe"
 
 	httpparser "github.com/DevNewbie1826/http-over-polling/internal/parser"
 	"golang.org/x/net/http/httpguts"
@@ -33,6 +34,17 @@ func resetHttpResponseWriter(writer *httpResponseWriter) *httpResponseWriter {
 	writer.pendingBody = nil
 	clear(writer.header)
 	return writer
+}
+
+func stableRequestURI(dst *[256]byte, raw string) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	if len(raw) <= len(dst) {
+		n := copy(dst[:], raw)
+		return unsafe.String(&dst[0], n)
+	}
+	return string(append([]byte(nil), raw...))
 }
 
 func (hc *HttpConn) newParserSetting() *httpparser.Setting {
@@ -131,7 +143,7 @@ func (hc *HttpConn) newParserSetting() *httpparser.Setting {
 			if len(hc.requestURIBuf) != 0 {
 				hc.request.RequestURI = string(hc.requestURIBuf)
 			} else {
-				hc.request.RequestURI = hc.requestURI
+				hc.request.RequestURI = stableRequestURI(&hc.requestURIInline, hc.requestURI)
 			}
 			hc.request.Method = getMethod(p.Method)
 			hc.request.ProtoMajor = int(p.Major)
@@ -274,12 +286,12 @@ func (hc *HttpConn) parseRequestURL(method string, raw string) *url.URL {
 	if raw == "" {
 		return &hc.parsedURL
 	}
-	query := strings.IndexByte(raw, '?')
-	if query < 0 {
+	path, query, ok := strings.Cut(raw, "?")
+	if !ok {
 		hc.parsedURL.Path = raw
 		return &hc.parsedURL
 	}
-	hc.parsedURL.Path = raw[:query]
-	hc.parsedURL.RawQuery = raw[query+1:]
+	hc.parsedURL.Path = path
+	hc.parsedURL.RawQuery = query
 	return &hc.parsedURL
 }

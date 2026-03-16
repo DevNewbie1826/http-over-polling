@@ -28,6 +28,7 @@ type HttpConn struct {
 	handleErr        error
 	requestDone      bool
 	requestURI       string
+	requestURIInline [256]byte
 	requestURIBuf    []byte
 	connectionVal    string
 	connections      [1]string
@@ -97,18 +98,20 @@ func (hc *HttpConn) Serve() error {
 			return hc.handleErr
 		}
 		discardBytes := parsedBytes
-		resumeBoundary := hc.requestDone
+		resumeOnNextRead := false
 		if !hc.requestDone && parsedBytes < len(buffer) {
 			discardBytes = len(buffer)
-			resumeBoundary = true
+			resumeOnNextRead = true
 		}
 		if discardBytes > 0 {
 			if _, err := hc.conn.Discard(discardBytes); err != nil {
 				return err
 			}
 		}
-		if resumeBoundary {
+		if hc.requestDone {
 			hc.conn.CompleteRequest()
+		} else if resumeOnNextRead {
+			hc.conn.ResumeOnNextRead()
 		}
 		if !hc.requestDone || parsedBytes == 0 {
 			return nil

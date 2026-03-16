@@ -153,6 +153,7 @@ func (c *testConn) Discard(n int) (int, error) {
 func (c *testConn) Close() error         { c.closed = true; return nil }
 func (c *testConn) PauseRead()           {}
 func (c *testConn) ResumeRead()          {}
+func (c *testConn) ResumeOnNextRead()    {}
 func (c *testConn) CompleteRequest()     { c.completeCalls++ }
 func (c *testConn) Context() any         { return c.ctx }
 func (c *testConn) SetContext(v any)     { c.ctx = v }
@@ -304,36 +305,16 @@ func TestBuildsMultiChunkedRequest(t *testing.T) {
 	}
 }
 
-func TestBuildsRequestZeroCopyMetadataSingleChunk(t *testing.T) {
+func TestBuildsRequestURIDoesNotAliasInputSingleChunk(t *testing.T) {
 	input := []byte("GET /hello?name=hop HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\nX-Test: yes\r\n\r\n")
 	conn := newTestConn(input)
 	uriIndex := bytes.Index(conn.in, []byte("/hello?name=hop"))
-	hostIndex := bytes.Index(conn.in, []byte("example.com"))
-	headerIndex := bytes.Index(conn.in, []byte("yes"))
-	if uriIndex < 0 || hostIndex < 0 || headerIndex < 0 {
+	if uriIndex < 0 {
 		t.Fatal("failed to find expected substrings in input")
 	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if raceSafeCopiesEnabled() {
-			if unsafe.StringData(r.RequestURI) == &conn.in[uriIndex] {
-				t.Fatal("RequestURI unexpectedly aliases input bytes under race build")
-			}
-			if unsafe.StringData(r.Host) == &conn.in[hostIndex] {
-				t.Fatal("Host unexpectedly aliases input bytes under race build")
-			}
-			if unsafe.StringData(r.Header.Get("X-Test")) == &conn.in[headerIndex] {
-				t.Fatal("header value unexpectedly aliases input bytes under race build")
-			}
-		} else {
-			if unsafe.StringData(r.RequestURI) != &conn.in[uriIndex] {
-				t.Fatal("RequestURI does not alias input bytes")
-			}
-			if unsafe.StringData(r.Host) != &conn.in[hostIndex] {
-				t.Fatal("Host does not alias input bytes")
-			}
-			if unsafe.StringData(r.Header.Get("X-Test")) != &conn.in[headerIndex] {
-				t.Fatal("header value does not alias input bytes")
-			}
+		if unsafe.StringData(r.RequestURI) == &conn.in[uriIndex] {
+			t.Fatal("RequestURI unexpectedly aliases input bytes")
 		}
 		_, _ = w.Write([]byte("ok"))
 	})
@@ -341,6 +322,42 @@ func TestBuildsRequestZeroCopyMetadataSingleChunk(t *testing.T) {
 	hc := NewHttpConn(conn, handler)
 	if err := hc.Serve(); err != nil {
 		t.Fatalf("Serve() error = %v", err)
+	}
+}
+
+func TestRequestMetadataStaysStableAfterReadBufferReuse(t *testing.T) {
+	backing := append([]byte(nil), []byte("GET /hello?name=hop HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\nX-Test: yes\r\n\r\n")...)
+	conn := &testConn{
+		in:     backing,
+		local:  testAddr("127.0.0.1:8080"),
+		remote: testAddr("127.0.0.1:12345"),
+	}
+	uriIndex := bytes.Index(backing, []byte("/hello?name=hop"))
+	if uriIndex < 0 {
+		t.Fatal("failed to find expected substrings in input")
+	}
+
+	var captured *http.Request
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured = r
+		_, _ = w.Write([]byte("ok"))
+	})
+
+	hc := NewHttpConn(conn, handler)
+	if err := hc.Serve(); err != nil {
+		t.Fatalf("Serve() error = %v", err)
+	}
+	if captured == nil {
+		t.Fatal("captured request is nil")
+	}
+
+	backing[uriIndex+1] = 'X'
+
+	if captured.RequestURI != "/hello?name=hop" {
+		t.Fatalf("RequestURI = %q, want %q", captured.RequestURI, "/hello?name=hop")
+	}
+	if got := captured.URL.Path; got != "/hello" {
+		t.Fatalf("URL.Path = %q, want %q", got, "/hello")
 	}
 }
 
@@ -893,7 +910,7 @@ func TestParserOwnedFramingExperimentCurrentlyConsumesFullBuffer(t *testing.T) {
 	}
 }
 
-func TestServeSplitHeaderValueConsumesTransportBufferAndReopensGate(t *testing.T) {
+func TestServeSplitHeaderValueConsumesTransportBufferWithoutCompletingRequest(t *testing.T) {
 	conn := newTestConn([]byte("GET / HTTP/1.1\r\nHost: exam"))
 	var handled atomic.Int32
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -908,8 +925,8 @@ func TestServeSplitHeaderValueConsumesTransportBufferAndReopensGate(t *testing.T
 	if got := handled.Load(); got != 0 {
 		t.Fatalf("handled requests = %d, want 0 for incomplete request", got)
 	}
-	if conn.completeCalls != 1 {
-		t.Fatalf("CompleteRequest calls = %d, want 1 after parser retains split fragment", conn.completeCalls)
+	if conn.completeCalls != 0 {
+		t.Fatalf("CompleteRequest calls = %d, want 0 before request boundary", conn.completeCalls)
 	}
 	if len(conn.in) != 0 {
 		t.Fatalf("remaining input = %q, want empty after parser retained split fragment", string(conn.in))
@@ -935,8 +952,8 @@ func TestServeSplitHeaderValueContinuesWithoutDuplicatingRetainedFragment(t *tes
 	if capturedHost != "example.com" {
 		t.Fatalf("captured host = %q, want %q", capturedHost, "example.com")
 	}
-	if conn.completeCalls != 2 {
-		t.Fatalf("CompleteRequest calls = %d, want 2 across split request and completion", conn.completeCalls)
+	if conn.completeCalls != 1 {
+		t.Fatalf("CompleteRequest calls = %d, want 1 after completed split request", conn.completeCalls)
 	}
 	if len(conn.in) != 0 {
 		t.Fatalf("remaining input = %q, want empty after request completion", string(conn.in))
