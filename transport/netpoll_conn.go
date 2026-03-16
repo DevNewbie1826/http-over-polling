@@ -24,6 +24,7 @@ type netpollConn struct {
 	closeOnce    atomic.Bool
 	readPaused   atomic.Bool
 	resumeOnRead atomic.Bool
+	resumeArmed  atomic.Bool
 	inFlight     atomic.Bool
 }
 
@@ -156,7 +157,7 @@ func (c *netpollConn) PauseRead()  { c.readPaused.Store(true) }
 func (c *netpollConn) ResumeRead() { c.readPaused.Store(false) }
 func (c *netpollConn) ResumeOnNextRead() {
 	c.resumeOnRead.Store(true)
-	c.inFlight.Store(false)
+	c.resumeArmed.Store(c.conn.Reader().Len() == 0)
 }
 func (c *netpollConn) CompleteRequest() {
 	c.inFlight.Store(false)
@@ -204,10 +205,16 @@ func (c *netpollConn) serve(events Events) error {
 		return nil
 	}
 	if c.resumeOnRead.Load() {
-		if c.conn.Reader().Len() == 0 {
+		buffered := c.conn.Reader().Len()
+		if buffered == 0 {
+			c.resumeArmed.Store(true)
+			return nil
+		}
+		if !c.resumeArmed.Load() {
 			return nil
 		}
 		c.resumeOnRead.Store(false)
+		c.resumeArmed.Store(false)
 		c.inFlight.Store(false)
 	}
 	if !c.inFlight.CompareAndSwap(false, true) {
