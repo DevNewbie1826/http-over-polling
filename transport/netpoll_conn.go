@@ -3,6 +3,7 @@ package transport
 import (
 	"bufio"
 	"net"
+	"sync"
 	"sync/atomic"
 
 	"github.com/cloudwego/netpoll"
@@ -262,10 +263,25 @@ type netpollWriteLease struct {
 	data []byte
 }
 
+var netpollWriteLeasePool = sync.Pool{
+	New: func() any {
+		return &netpollWriteLease{}
+	},
+}
+
+func acquireNetpollWriteLease(data []byte) *netpollWriteLease {
+	lease := netpollWriteLeasePool.Get().(*netpollWriteLease)
+	lease.data = data
+	return lease
+}
+
 func (l *netpollWriteLease) Bytes() []byte { return l.data }
 
 func (l *netpollWriteLease) Retain() WriteLease {
-	return &netpollWriteLease{data: l.data}
+	return acquireNetpollWriteLease(l.data)
 }
 
-func (l *netpollWriteLease) Release() {}
+func (l *netpollWriteLease) Release() {
+	l.data = nil
+	netpollWriteLeasePool.Put(l)
+}

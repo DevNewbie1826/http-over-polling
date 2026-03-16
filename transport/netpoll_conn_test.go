@@ -19,21 +19,27 @@ func (a testNetpollAddr) String() string  { return string(a) }
 
 type testWriteLease struct{ data []byte }
 
+func staticWriteLeaseForTest(data string) WriteLease {
+	return &testWriteLease{data: []byte(data)}
+}
+
+func staticNonCopyingWriteLease(data string) WriteLease {
+	return &netpollWriteLease{data: []byte(data)}
+}
+
+func (l *testWriteLease) Bytes() []byte { return l.data }
+func (l *testWriteLease) Retain() WriteLease {
+	// This is the problematic copy that pollutes alloc measurements.
+	// Use nonCopyingWriteLease for zero-alloc benchmarks.
+	return &testWriteLease{data: append([]byte(nil), l.data...)}
+}
+func (l *testWriteLease) Release() {}
+
 type trackedWriteLeaseForTest struct {
 	data         []byte
 	retainCalls  *atomic.Int32
 	releaseCalls *atomic.Int32
 }
-
-func staticWriteLeaseForTest(data string) WriteLease {
-	return &testWriteLease{data: []byte(data)}
-}
-
-func (l *testWriteLease) Bytes() []byte { return l.data }
-func (l *testWriteLease) Retain() WriteLease {
-	return &testWriteLease{data: append([]byte(nil), l.data...)}
-}
-func (l *testWriteLease) Release() {}
 
 func (l *trackedWriteLeaseForTest) Bytes() []byte { return l.data }
 func (l *trackedWriteLeaseForTest) Retain() WriteLease {
@@ -112,6 +118,76 @@ func (w *countingNetpollWriterForTest) Flush() error {
 }
 
 func (w *countingNetpollWriterForTest) MallocLen() int { return w.inner.MallocLen() }
+
+// zeroAllocNetpollWriter is a netpoll.Writer implementation that performs no allocations.
+// It discards all written data but tracks method call counts for verification.
+// This is used to isolate transport path allocations from buffer management artifacts.
+type zeroAllocNetpollWriter struct {
+	writeBinaryCalls int
+	flushCalls       int
+	mallocCalls      int
+	mallocAckCalls   int
+	mallocLen        int
+}
+
+// zeroAllocBuf is a static buffer used by zeroAllocNetpollWriter to avoid allocations.
+var zeroAllocBuf [8192]byte
+
+func newZeroAllocNetpollWriter() *zeroAllocNetpollWriter {
+	return &zeroAllocNetpollWriter{}
+}
+
+func (w *zeroAllocNetpollWriter) reset() {
+	w.writeBinaryCalls = 0
+	w.flushCalls = 0
+	w.mallocCalls = 0
+	w.mallocAckCalls = 0
+	w.mallocLen = 0
+}
+
+func (w *zeroAllocNetpollWriter) Malloc(n int) ([]byte, error) {
+	w.mallocCalls++
+	if n > len(zeroAllocBuf) {
+		n = len(zeroAllocBuf)
+	}
+	return zeroAllocBuf[:0], nil
+}
+
+func (w *zeroAllocNetpollWriter) WriteString(s string) (int, error) {
+	return len(s), nil
+}
+
+func (w *zeroAllocNetpollWriter) WriteBinary(b []byte) (int, error) {
+	w.writeBinaryCalls++
+	return len(b), nil
+}
+
+func (w *zeroAllocNetpollWriter) WriteByte(b byte) error {
+	return nil
+}
+
+func (w *zeroAllocNetpollWriter) WriteDirect(p []byte, remainCap int) error {
+	return nil
+}
+
+func (w *zeroAllocNetpollWriter) MallocAck(n int) error {
+	w.mallocAckCalls++
+	w.mallocLen += n
+	return nil
+}
+
+func (w *zeroAllocNetpollWriter) Append(other netpoll.Writer) error {
+	return nil
+}
+
+func (w *zeroAllocNetpollWriter) Flush() error {
+	w.flushCalls++
+	return nil
+}
+
+func (w *zeroAllocNetpollWriter) MallocLen() int {
+	return w.mallocLen
+}
 
 type countingNetpollConnectionForTest struct {
 	writer *countingNetpollWriterForTest
@@ -244,6 +320,52 @@ func (c *countingNetpollConnectionForTest) AddCloseCallback(netpoll.CloseCallbac
 	return nil
 }
 
+// zeroAllocNetpollConnectionForTest wraps netpollConn with a zero-allocation writer.
+type zeroAllocNetpollConnectionForTest struct {
+	writer *zeroAllocNetpollWriter
+	reader netpoll.Reader
+	local  net.Addr
+	remote net.Addr
+	closes int
+}
+
+func newZeroAllocNetpollConnForTest() (*netpollConn, *zeroAllocNetpollWriter) {
+	writer := newZeroAllocNetpollWriter()
+	conn := &zeroAllocNetpollConnectionForTest{
+		writer: writer,
+		reader: netpoll.NewReader(bytes.NewReader(nil)),
+		local:  testNetpollAddr("127.0.0.1:8080"),
+		remote: testNetpollAddr("127.0.0.1:12345"),
+	}
+	return newNetpollConn(conn), writer
+}
+
+func (c *zeroAllocNetpollConnectionForTest) Read(_ []byte) (int, error)  { return 0, io.EOF }
+func (c *zeroAllocNetpollConnectionForTest) Write(p []byte) (int, error) { return len(p), nil }
+func (c *zeroAllocNetpollConnectionForTest) Close() error {
+	c.closes++
+	return nil
+}
+func (c *zeroAllocNetpollConnectionForTest) LocalAddr() net.Addr                { return c.local }
+func (c *zeroAllocNetpollConnectionForTest) RemoteAddr() net.Addr               { return c.remote }
+func (c *zeroAllocNetpollConnectionForTest) SetDeadline(time.Time) error        { return nil }
+func (c *zeroAllocNetpollConnectionForTest) SetReadDeadline(time.Time) error    { return nil }
+func (c *zeroAllocNetpollConnectionForTest) SetWriteDeadline(time.Time) error   { return nil }
+func (c *zeroAllocNetpollConnectionForTest) Reader() netpoll.Reader             { return c.reader }
+func (c *zeroAllocNetpollConnectionForTest) Writer() netpoll.Writer             { return c.writer }
+func (c *zeroAllocNetpollConnectionForTest) IsActive() bool                     { return true }
+func (c *zeroAllocNetpollConnectionForTest) SetReadTimeout(time.Duration) error { return nil }
+func (c *zeroAllocNetpollConnectionForTest) SetWriteTimeout(time.Duration) error {
+	return nil
+}
+func (c *zeroAllocNetpollConnectionForTest) SetIdleTimeout(time.Duration) error { return nil }
+func (c *zeroAllocNetpollConnectionForTest) SetOnRequest(netpoll.OnRequest) error {
+	return nil
+}
+func (c *zeroAllocNetpollConnectionForTest) AddCloseCallback(netpoll.CloseCallback) error {
+	return nil
+}
+
 func TestNetpollConnWriteLeaseFlushesOnceExperiment(t *testing.T) {
 	conn, writer := newCountingNetpollConnForTest()
 	n, err := conn.WriteLease(staticWriteLeaseForTest("body"))
@@ -318,6 +440,94 @@ func BenchmarkNetpollConnWritevThreeChunksExperiment(b *testing.B) {
 		if _, err := conn.Writev([]byte("a"), []byte("bb"), []byte("ccc")); err != nil {
 			b.Fatalf("Writev() error = %v", err)
 		}
+	}
+}
+
+// BenchmarkZeroAllocWriteLease measures allocations in the protected WriteLease path
+// when using a non-copying lease and zero-allocation writer.
+// This isolates transport boundary allocations from test artifacts.
+func BenchmarkZeroAllocWriteLease(b *testing.B) {
+	conn, writer := newZeroAllocNetpollConnForTest()
+	payload := staticNonCopyingWriteLease("body")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		writer.reset()
+		if _, err := conn.WriteLease(payload); err != nil {
+			b.Fatalf("WriteLease() error = %v", err)
+		}
+	}
+}
+
+// BenchmarkZeroAllocWriteHeaderAndLease measures allocations in the protected
+// WriteHeaderAndLease path when using a non-copying lease and zero-allocation writer.
+func BenchmarkZeroAllocWriteHeaderAndLease(b *testing.B) {
+	conn, writer := newZeroAllocNetpollConnForTest()
+	header := []byte("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n")
+	body := staticNonCopyingWriteLease("ok")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		writer.reset()
+		if _, err := conn.WriteHeaderAndLease(header, body); err != nil {
+			b.Fatalf("WriteHeaderAndLease() error = %v", err)
+		}
+	}
+}
+
+// BenchmarkCopyingWriteLease demonstrates the allocation impact of the copying Retain().
+// This uses the old testWriteLease which copies data on Retain().
+func BenchmarkCopyingWriteLease(b *testing.B) {
+	conn, writer := newZeroAllocNetpollConnForTest()
+	payload := staticWriteLeaseForTest("body")
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		writer.reset()
+		if _, err := conn.WriteLease(payload); err != nil {
+			b.Fatalf("WriteLease() error = %v", err)
+		}
+	}
+}
+
+func TestZeroAllocWriteLeaseIsZeroAllocation(t *testing.T) {
+	conn, writer := newZeroAllocNetpollConnForTest()
+	payload := staticNonCopyingWriteLease("body")
+
+	var allocs int64
+	for i := 0; i < 1000; i++ {
+		writer.reset()
+		allocs += int64(testing.AllocsPerRun(1000, func() {
+			if _, err := conn.WriteLease(payload); err != nil {
+				t.Fatalf("WriteLease() error = %v", err)
+			}
+		}))
+	}
+
+	avgAllocs := float64(allocs) / 1000.0
+	if avgAllocs != 0 {
+		t.Errorf("WriteLease average allocs = %.2f, want 0", avgAllocs)
+	}
+}
+
+func TestZeroAllocWriteHeaderAndLeaseIsZeroAllocation(t *testing.T) {
+	conn, writer := newZeroAllocNetpollConnForTest()
+	header := []byte("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n")
+	body := staticNonCopyingWriteLease("ok")
+
+	var allocs int64
+	for i := 0; i < 1000; i++ {
+		writer.reset()
+		allocs += int64(testing.AllocsPerRun(1000, func() {
+			if _, err := conn.WriteHeaderAndLease(header, body); err != nil {
+				t.Fatalf("WriteHeaderAndLease() error = %v", err)
+			}
+		}))
+	}
+
+	avgAllocs := float64(allocs) / 1000.0
+	if avgAllocs != 0 {
+		t.Errorf("WriteHeaderAndLease average allocs = %.2f, want 0", avgAllocs)
 	}
 }
 
