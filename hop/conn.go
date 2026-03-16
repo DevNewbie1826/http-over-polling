@@ -96,12 +96,18 @@ func (hc *HttpConn) Serve() error {
 		if hc.handleErr != nil {
 			return hc.handleErr
 		}
-		if parsedBytes > 0 {
-			if _, err := hc.conn.Discard(parsedBytes); err != nil {
+		discardBytes := parsedBytes
+		resumeBoundary := hc.requestDone
+		if !hc.requestDone && parsedBytes < len(buffer) {
+			discardBytes = len(buffer)
+			resumeBoundary = true
+		}
+		if discardBytes > 0 {
+			if _, err := hc.conn.Discard(discardBytes); err != nil {
 				return err
 			}
 		}
-		if hc.requestDone {
+		if resumeBoundary {
 			hc.conn.CompleteRequest()
 		}
 		if !hc.requestDone || parsedBytes == 0 {

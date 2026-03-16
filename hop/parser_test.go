@@ -893,6 +893,59 @@ func TestParserOwnedFramingExperimentCurrentlyConsumesFullBuffer(t *testing.T) {
 	}
 }
 
+func TestServeSplitHeaderValueConsumesTransportBufferAndReopensGate(t *testing.T) {
+	conn := newTestConn([]byte("GET / HTTP/1.1\r\nHost: exam"))
+	var handled atomic.Int32
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handled.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	})
+
+	hc := NewHttpConn(conn, handler)
+	if err := hc.Serve(); err != nil {
+		t.Fatalf("Serve() error = %v", err)
+	}
+	if got := handled.Load(); got != 0 {
+		t.Fatalf("handled requests = %d, want 0 for incomplete request", got)
+	}
+	if conn.completeCalls != 1 {
+		t.Fatalf("CompleteRequest calls = %d, want 1 after parser retains split fragment", conn.completeCalls)
+	}
+	if len(conn.in) != 0 {
+		t.Fatalf("remaining input = %q, want empty after parser retained split fragment", string(conn.in))
+	}
+}
+
+func TestServeSplitHeaderValueContinuesWithoutDuplicatingRetainedFragment(t *testing.T) {
+	conn := newTestConn([]byte("GET / HTTP/1.1\r\nHost: exam"))
+	var capturedHost string
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedHost = r.Host
+		_, _ = w.Write([]byte("ok"))
+	})
+
+	hc := NewHttpConn(conn, handler)
+	if err := hc.Serve(); err != nil {
+		t.Fatalf("first Serve() error = %v", err)
+	}
+	conn.in = append(conn.in, []byte("ple.com\r\nConnection: close\r\n\r\n")...)
+	if err := hc.Serve(); err != nil {
+		t.Fatalf("second Serve() error = %v", err)
+	}
+	if capturedHost != "example.com" {
+		t.Fatalf("captured host = %q, want %q", capturedHost, "example.com")
+	}
+	if conn.completeCalls != 2 {
+		t.Fatalf("CompleteRequest calls = %d, want 2 across split request and completion", conn.completeCalls)
+	}
+	if len(conn.in) != 0 {
+		t.Fatalf("remaining input = %q, want empty after request completion", string(conn.in))
+	}
+	if !conn.closed {
+		t.Fatal("transport conn was not closed for Connection: close request")
+	}
+}
+
 func TestServeUsesAcquireReadAndLeaseWritePath(t *testing.T) {
 	conn := newTestConn([]byte("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n"))
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
