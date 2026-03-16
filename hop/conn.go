@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 
 	"github.com/DevNewbie1826/http-over-polling/internal/bytebufferpool"
 	httpparser "github.com/DevNewbie1826/http-over-polling/internal/parser"
@@ -65,7 +66,6 @@ func NewHttpConn(conn transport.Conn, handler http.Handler) *HttpConn {
 	}
 	hc.asyncWriter.conn = conn
 	hc.asyncWriter.buf = bytebufferpool.Get()
-	hc.asyncWriter.lease = &connWriteLease{}
 	hc.parser.SetUserData(hc)
 	hc.setting = hc.newParserSetting()
 	return hc
@@ -143,11 +143,26 @@ type connWriteLease struct {
 	data []byte
 }
 
+var connWriteLeasePool = sync.Pool{
+	New: func() any {
+		return &connWriteLease{}
+	},
+}
+
+func acquireConnWriteLease(data []byte) *connWriteLease {
+	lease := connWriteLeasePool.Get().(*connWriteLease)
+	lease.data = data
+	return lease
+}
+
 func (l *connWriteLease) Bytes() []byte { return l.data }
 func (l *connWriteLease) Retain() transport.WriteLease {
-	return &connWriteLease{data: l.data}
+	return acquireConnWriteLease(l.data)
 }
-func (l *connWriteLease) Release() {}
+func (l *connWriteLease) Release() {
+	l.data = nil
+	connWriteLeasePool.Put(l)
+}
 
 type connWriteFlusher struct {
 	conn  transport.Conn
@@ -165,29 +180,29 @@ func (w *connWriteFlusher) Flush() error {
 	if w.buf == nil || len(w.buf.B) == 0 {
 		return nil
 	}
-	w.lease.data = w.buf.B
-	_, err := w.conn.WriteLease(w.lease)
+	lease := acquireConnWriteLease(w.buf.B)
+	_, err := w.conn.WriteLease(lease)
 	w.buf.Reset()
 	return err
 }
 func (w *connWriteFlusher) WriteLease(p []byte) (int, error) {
 	if len(w.buf.B) > 0 {
 		header := w.buf.B
-		w.lease.data = p
-		n, err := w.conn.WriteHeaderAndLease(header, w.lease)
+		lease := acquireConnWriteLease(p)
+		n, err := w.conn.WriteHeaderAndLease(header, lease)
 		w.buf.Reset()
 		return n, err
 	}
-	w.lease.data = p
-	return w.conn.WriteLease(w.lease)
+	lease := acquireConnWriteLease(p)
+	return w.conn.WriteLease(lease)
 }
 
 func (w *connWriteFlusher) WriteHeaderAndLease(header []byte, body []byte) (int, error) {
 	if len(w.buf.B) > 0 {
 		w.buf.Reset()
 	}
-	w.lease.data = body
-	return w.conn.WriteHeaderAndLease(header, w.lease)
+	lease := acquireConnWriteLease(body)
+	return w.conn.WriteHeaderAndLease(header, lease)
 }
 
 func (hc *HttpConn) commitHeader() {

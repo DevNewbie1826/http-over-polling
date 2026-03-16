@@ -2,11 +2,14 @@ package hop
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 	"unsafe"
 
 	"github.com/DevNewbie1826/http-over-polling/internal/bytebufferpool"
@@ -737,6 +740,93 @@ func TestServeDrainsBufferedPipelineInSingleDispatch(t *testing.T) {
 	}
 }
 
+func TestServeUsesCompleteRequestAsBoundaryAfterTransportGate(t *testing.T) {
+	addr := hopNextAddr(t)
+	firstStarted := make(chan struct{}, 1)
+	releaseFirst := make(chan struct{})
+	secondHandled := make(chan struct{}, 1)
+	var dispatches atomic.Int32
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/one":
+			select {
+			case firstStarted <- struct{}{}:
+			default:
+			}
+			<-releaseFirst
+			_, _ = w.Write([]byte("one"))
+		case "/two":
+			select {
+			case secondHandled <- struct{}{}:
+			default:
+			}
+			_, _ = w.Write([]byte("two"))
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	})
+
+	server := transport.NewServer(transport.Events{
+		OnData: func(conn transport.Conn) error {
+			dispatches.Add(1)
+			hc, _ := conn.Context().(*HttpConn)
+			if hc == nil {
+				hc = NewHttpConn(conn, handler)
+				conn.SetContext(hc)
+			}
+			return hc.Serve()
+		},
+	})
+
+	go func() {
+		_ = server.ListenAndServe(addr)
+	}()
+
+	hopWaitForDialTarget(t, addr)
+	conn, err := net.Dial("tcp", "127.0.0.1"+addr)
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer conn.Close()
+
+	if _, err := io.WriteString(conn, "GET /one HTTP/1.1\r\nHost: example.com\r\nConnection: keep-alive\r\n\r\n"); err != nil {
+		t.Fatalf("first WriteString() error = %v", err)
+	}
+	select {
+	case <-firstStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first request handler")
+	}
+
+	if _, err := io.WriteString(conn, "GET /two HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n"); err != nil {
+		t.Fatalf("second WriteString() error = %v", err)
+	}
+
+	select {
+	case <-secondHandled:
+		t.Fatal("second request handled before first request reached CompleteRequest boundary")
+	case <-time.After(200 * time.Millisecond):
+	}
+	if got := dispatches.Load(); got != 1 {
+		t.Fatalf("OnData dispatches while first request active = %d, want 1", got)
+	}
+
+	close(releaseFirst)
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	responseBytes, err := io.ReadAll(conn)
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	response := string(responseBytes)
+	if !strings.Contains(response, "one") {
+		t.Fatalf("first response missing body: %q", response)
+	}
+	if !strings.Contains(response, "two") {
+		t.Fatalf("second response missing body: %q", response)
+	}
+}
+
 func TestServeExperimentDrainsBufferedPipelineWhenReentered(t *testing.T) {
 	conn := newTestConn([]byte("GET /one HTTP/1.1\r\nHost: example.com\r\nConnection: keep-alive\r\n\r\nGET /two HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n"))
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -957,5 +1047,31 @@ func TestShouldCloseValue(t *testing.T) {
 				t.Fatalf("shouldCloseValue(%d, %d, %q) = %t, want %t", tt.major, tt.minor, tt.connection, got, tt.want)
 			}
 		})
+	}
+}
+
+func hopNextAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	defer ln.Close()
+	return fmt.Sprintf(":%d", ln.Addr().(*net.TCPAddr).Port)
+}
+
+func hopWaitForDialTarget(t *testing.T, addr string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		conn, err := net.DialTimeout("tcp", "127.0.0.1"+addr, 50*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("server at %s did not become ready: %v", addr, err)
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 }
