@@ -361,6 +361,47 @@ func TestRequestMetadataStaysStableAfterReadBufferReuse(t *testing.T) {
 	}
 }
 
+func TestRequestHostAndHeaderStayStableAfterReadBufferReuse(t *testing.T) {
+	backing := append([]byte(nil), []byte("GET /hello HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\nX-Test: yes\r\n\r\n")...)
+	conn := &testConn{
+		in:     backing,
+		local:  testAddr("127.0.0.1:8080"),
+		remote: testAddr("127.0.0.1:12345"),
+	}
+	hostIndex := bytes.Index(backing, []byte("example.com"))
+	if hostIndex < 0 {
+		t.Fatal("failed to find host in input")
+	}
+	headerValIndex := bytes.Index(backing, []byte("yes"))
+	if headerValIndex < 0 {
+		t.Fatal("failed to find X-Test value in input")
+	}
+
+	var captured *http.Request
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured = r
+		_, _ = w.Write([]byte("ok"))
+	})
+
+	hc := NewHttpConn(conn, handler)
+	if err := hc.Serve(); err != nil {
+		t.Fatalf("Serve() error = %v", err)
+	}
+	if captured == nil {
+		t.Fatal("captured request is nil")
+	}
+
+	backing[hostIndex] = 'X'
+	backing[headerValIndex] = 'n'
+
+	if got := captured.Host; got != "example.com" {
+		t.Fatalf("Host = %q, want %q", got, "example.com")
+	}
+	if got := captured.Header.Get("X-Test"); got != "yes" {
+		t.Fatalf("Header.Get(X-Test) = %q, want %q", got, "yes")
+	}
+}
+
 func TestBuildsRequestZeroCopyBodySingleChunk(t *testing.T) {
 	input := []byte("POST /upload HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\n\r\nhello")
 	conn := newTestConn(input)

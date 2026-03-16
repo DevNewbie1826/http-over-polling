@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"unsafe"
 
 	"github.com/DevNewbie1826/http-over-polling/internal/bytebufferpool"
 	httpparser "github.com/DevNewbie1826/http-over-polling/internal/parser"
@@ -50,6 +51,18 @@ type HttpConn struct {
 	bodyView         []byte
 	body             CompositeBuffer
 	bodyLease        readLeaseBody
+	metadataScratch  []byte
+	metadataInline   [1024]byte
+}
+
+func (hc *HttpConn) stableHeaderMetadataString(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	start := len(hc.metadataScratch)
+	hc.metadataScratch = append(hc.metadataScratch, raw...)
+	buf := hc.metadataScratch[start:]
+	return unsafe.String(unsafe.SliceData(buf), len(buf))
 }
 
 func NewHttpConn(conn transport.Conn, handler http.Handler) *HttpConn {
@@ -65,6 +78,7 @@ func NewHttpConn(conn transport.Conn, handler http.Handler) *HttpConn {
 		request:       &http.Request{Header: make(http.Header), Body: http.NoBody},
 		writer:        &httpResponseWriter{},
 	}
+	hc.metadataScratch = hc.metadataInline[:0]
 	hc.asyncWriter.conn = conn
 	hc.asyncWriter.buf = bytebufferpool.Get()
 	hc.parser.SetUserData(hc)
@@ -226,52 +240,60 @@ func (hc *HttpConn) commitHeader() {
 	if len(hc.headerValBuf) != 0 {
 		value = string(hc.headerValBuf)
 	}
+	requestName := name
+	if len(hc.headerNameBuf) == 0 {
+		requestName = hc.stableHeaderMetadataString(name)
+	}
+	requestValue := value
+	if len(hc.headerValBuf) == 0 {
+		requestValue = hc.stableHeaderMetadataString(value)
+	}
 	switch {
 	case strings.EqualFold(name, "Host"):
-		hc.request.Host = value
+		hc.request.Host = requestValue
 	case strings.EqualFold(name, "Connection"):
 		if hc.connectionVal == "" {
 			hc.connectionVal = value
 			if len(hc.headerNameBuf) == 0 && len(hc.headerValBuf) == 0 {
-				hc.connections[0] = value
+				hc.connections[0] = requestValue
 				hc.request.Header["Connection"] = hc.connections[:]
 				break
 			}
 		} else {
 			hc.connectionVal += ", " + value
 		}
-		hc.request.Header.Add(name, value)
+		hc.request.Header.Add(requestName, requestValue)
 	case strings.EqualFold(name, "Content-Length"):
 		if hc.contentLength == "" && len(hc.headerNameBuf) == 0 && len(hc.headerValBuf) == 0 {
 			hc.contentLength = value
-			hc.contentLens[0] = value
+			hc.contentLens[0] = requestValue
 			hc.request.Header["Content-Length"] = hc.contentLens[:]
 		} else {
-			hc.request.Header.Add(name, value)
+			hc.request.Header.Add(requestName, requestValue)
 		}
 	case strings.EqualFold(name, "Content-Type"):
 		if hc.contentType == "" && len(hc.headerNameBuf) == 0 && len(hc.headerValBuf) == 0 {
 			hc.contentType = value
-			hc.contentTypes[0] = value
+			hc.contentTypes[0] = requestValue
 			hc.request.Header["Content-Type"] = hc.contentTypes[:]
 		} else {
-			hc.request.Header.Add(name, value)
+			hc.request.Header.Add(requestName, requestValue)
 		}
 	case strings.EqualFold(name, "Upgrade"):
 		if hc.upgrade == "" && len(hc.headerNameBuf) == 0 && len(hc.headerValBuf) == 0 {
 			hc.upgrade = value
-			hc.upgrades[0] = value
+			hc.upgrades[0] = requestValue
 			hc.request.Header["Upgrade"] = hc.upgrades[:]
 		} else {
-			hc.request.Header.Add(name, value)
+			hc.request.Header.Add(requestName, requestValue)
 		}
 	case strings.EqualFold(name, "Trailer"):
 		if hc.trailer == "" && len(hc.headerNameBuf) == 0 && len(hc.headerValBuf) == 0 {
 			hc.trailer = value
-			hc.trailers[0] = value
+			hc.trailers[0] = requestValue
 			hc.request.Header["Trailer"] = hc.trailers[:]
 		} else {
-			hc.request.Header.Add(name, value)
+			hc.request.Header.Add(requestName, requestValue)
 		}
 	case strings.EqualFold(name, "Transfer-Encoding"):
 		if hc.transferEncoding == "" {
@@ -280,13 +302,13 @@ func (hc *HttpConn) commitHeader() {
 			hc.transferEncoding += ", " + value
 		}
 		if len(hc.request.Header["Transfer-Encoding"]) == 0 && len(hc.headerNameBuf) == 0 && len(hc.headerValBuf) == 0 {
-			hc.transferEncs[0] = value
+			hc.transferEncs[0] = requestValue
 			hc.request.Header["Transfer-Encoding"] = hc.transferEncs[:]
 		} else {
-			hc.request.Header.Add(name, value)
+			hc.request.Header.Add(requestName, requestValue)
 		}
 	default:
-		hc.request.Header.Add(name, value)
+		hc.request.Header.Add(requestName, requestValue)
 	}
 	hc.headerName = ""
 	hc.headerNameBuf = hc.headerNameBuf[:0]

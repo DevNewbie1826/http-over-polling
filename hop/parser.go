@@ -71,6 +71,7 @@ func (hc *HttpConn) newParserSetting() *httpparser.Setting {
 			hc.headerNameBuf = hc.headerNameBuf[:0]
 			hc.headerVal = ""
 			hc.headerValBuf = hc.headerValBuf[:0]
+			hc.metadataScratch = hc.metadataScratch[:0]
 			hc.bodyView = nil
 			hc.body.Reset()
 		},
