@@ -27,6 +27,7 @@ type Conn interface {
 	Discard(int) (int, error)
 	PauseRead()
 	ResumeRead()
+	ResumeOnNextRead()
 	CompleteRequest()
 	Close() error
 	Context() any

@@ -10,20 +10,21 @@ import (
 )
 
 type netpollConn struct {
-	conn        netpoll.Connection
-	local       net.Addr
-	remote      net.Addr
-	ctx         any
-	done        chan struct{}
-	lease       netpollReadLease
-	write       netpollWriteLease
-	readHandler func(net.Conn, *bufio.ReadWriter) error
-	rw          *bufio.ReadWriter
-	hijacked    atomic.Bool
-	closed      atomic.Bool
-	closeOnce   atomic.Bool
-	readPaused  atomic.Bool
-	inFlight    atomic.Bool
+	conn         netpoll.Connection
+	local        net.Addr
+	remote       net.Addr
+	ctx          any
+	done         chan struct{}
+	lease        netpollReadLease
+	write        netpollWriteLease
+	readHandler  func(net.Conn, *bufio.ReadWriter) error
+	rw           *bufio.ReadWriter
+	hijacked     atomic.Bool
+	closed       atomic.Bool
+	closeOnce    atomic.Bool
+	readPaused   atomic.Bool
+	resumeOnRead atomic.Bool
+	inFlight     atomic.Bool
 }
 
 func newNetpollConn(conn netpoll.Connection) *netpollConn {
@@ -153,6 +154,10 @@ func (c *netpollConn) Discard(n int) (int, error) {
 
 func (c *netpollConn) PauseRead()  { c.readPaused.Store(true) }
 func (c *netpollConn) ResumeRead() { c.readPaused.Store(false) }
+func (c *netpollConn) ResumeOnNextRead() {
+	c.resumeOnRead.Store(true)
+	c.inFlight.Store(false)
+}
 func (c *netpollConn) CompleteRequest() {
 	c.inFlight.Store(false)
 }
@@ -197,6 +202,13 @@ func (c *netpollConn) serve(events Events) error {
 	}
 	if c.readPaused.Load() {
 		return nil
+	}
+	if c.resumeOnRead.Load() {
+		if c.conn.Reader().Len() == 0 {
+			return nil
+		}
+		c.resumeOnRead.Store(false)
+		c.inFlight.Store(false)
 	}
 	if !c.inFlight.CompareAndSwap(false, true) {
 		return nil

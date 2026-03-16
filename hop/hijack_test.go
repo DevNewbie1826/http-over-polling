@@ -59,6 +59,8 @@ func (stubNetConn) SetWriteDeadline(time.Time) error { return nil }
 
 var _ transport.Conn = (*hijackTestConn)(nil)
 
+func (c *hijackTestConn) ResumeOnNextRead() {}
+
 func TestResponseWriterSupportsLegacyHijackAndSetReadHandler(t *testing.T) {
 	conn := newHijackTestConn([]byte("GET /ws HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n"))
 	var callbackConn net.Conn
