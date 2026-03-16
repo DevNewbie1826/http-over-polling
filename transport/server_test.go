@@ -207,6 +207,65 @@ func TestHijackWithoutReadHandlerKeepsConnectionOwnedUntilClose(t *testing.T) {
 	}
 }
 
+func TestConnectionDoesNotReenterOnDataWhileRequestActive(t *testing.T) {
+	addr := nextAddr(t)
+	firstDispatch := make(chan struct{}, 1)
+	reentered := make(chan struct{}, 1)
+	var dispatches atomic.Int32
+
+	server := NewServer(Events{
+		OnData: func(conn Conn) error {
+			lease := conn.AcquireRead()
+			data := append([]byte(nil), lease.Bytes()...)
+			lease.Release()
+			if len(data) > 0 {
+				if _, err := conn.Discard(len(data)); err != nil {
+					return err
+				}
+			}
+
+			if dispatches.Add(1) == 1 {
+				firstDispatch <- struct{}{}
+				return nil
+			}
+			reentered <- struct{}{}
+			return nil
+		},
+	})
+
+	go func() {
+		_ = server.ListenAndServe(addr)
+	}()
+
+	waitForDialTarget(t, addr)
+	conn, err := net.Dial("tcp", "127.0.0.1"+addr)
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer conn.Close()
+
+	if _, err := io.WriteString(conn, "first payload\n"); err != nil {
+		t.Fatalf("first WriteString() error = %v", err)
+	}
+	select {
+	case <-firstDispatch:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first dispatch")
+	}
+
+	if _, err := io.WriteString(conn, "second payload\n"); err != nil {
+		t.Fatalf("second WriteString() error = %v", err)
+	}
+	select {
+	case <-reentered:
+		t.Fatal("OnData re-entered before CompleteRequest")
+	case <-time.After(200 * time.Millisecond):
+	}
+	if got := dispatches.Load(); got != 1 {
+		t.Fatalf("OnData dispatches before CompleteRequest = %d, want 1", got)
+	}
+}
+
 func TestNewServerAppliesOptions(t *testing.T) {
 	s := NewServer(Events{}, WithReadTimeout(time.Second), nil, WithWriteTimeout(2*time.Second), WithIdleTimeout(3*time.Second))
 	if s.opts.readTimeout != time.Second {

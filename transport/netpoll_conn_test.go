@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"io"
 	"net"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +19,12 @@ func (a testNetpollAddr) String() string  { return string(a) }
 
 type testWriteLease struct{ data []byte }
 
+type trackedWriteLeaseForTest struct {
+	data         []byte
+	retainCalls  *atomic.Int32
+	releaseCalls *atomic.Int32
+}
+
 func staticWriteLeaseForTest(data string) WriteLease {
 	return &testWriteLease{data: []byte(data)}
 }
@@ -26,6 +34,23 @@ func (l *testWriteLease) Retain() WriteLease {
 	return &testWriteLease{data: append([]byte(nil), l.data...)}
 }
 func (l *testWriteLease) Release() {}
+
+func (l *trackedWriteLeaseForTest) Bytes() []byte { return l.data }
+func (l *trackedWriteLeaseForTest) Retain() WriteLease {
+	if l.retainCalls != nil {
+		l.retainCalls.Add(1)
+	}
+	return &trackedWriteLeaseForTest{
+		data:         l.data,
+		retainCalls:  l.retainCalls,
+		releaseCalls: l.releaseCalls,
+	}
+}
+func (l *trackedWriteLeaseForTest) Release() {
+	if l.releaseCalls != nil {
+		l.releaseCalls.Add(1)
+	}
+}
 
 type countingNetpollWriterForTest struct {
 	inner            netpoll.Writer
@@ -293,6 +318,161 @@ func BenchmarkNetpollConnWritevThreeChunksExperiment(b *testing.B) {
 		if _, err := conn.Writev([]byte("a"), []byte("bb"), []byte("ccc")); err != nil {
 			b.Fatalf("Writev() error = %v", err)
 		}
+	}
+}
+
+func TestNetpollConnRequestGating(t *testing.T) {
+	conn, _ := newCountingNetpollConnForTest()
+	started := make(chan struct{}, 1)
+	reentered := make(chan struct{}, 1)
+	releaseFirst := make(chan struct{})
+	var calls atomic.Int32
+
+	events := Events{
+		OnData: func(Conn) error {
+			n := calls.Add(1)
+			if n == 1 {
+				started <- struct{}{}
+				<-releaseFirst
+				return nil
+			}
+			reentered <- struct{}{}
+			return nil
+		},
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := conn.serve(events); err != nil {
+			t.Errorf("first serve() error = %v", err)
+		}
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first serve dispatch")
+	}
+
+	if err := conn.serve(events); err != nil {
+		t.Fatalf("second serve() error = %v", err)
+	}
+	select {
+	case <-reentered:
+		t.Fatal("second serve dispatched while first request was active")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(releaseFirst)
+	wg.Wait()
+
+	conn.CompleteRequest()
+	if err := conn.serve(events); err != nil {
+		t.Fatalf("third serve() error = %v", err)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("OnData calls after CompleteRequest = %d, want 2", got)
+	}
+}
+
+func TestNetpollConnPauseResumeAndCompleteRequest(t *testing.T) {
+	conn, _ := newCountingNetpollConnForTest()
+	var calls atomic.Int32
+	events := Events{OnData: func(Conn) error {
+		calls.Add(1)
+		return nil
+	}}
+
+	conn.PauseRead()
+	if err := conn.serve(events); err != nil {
+		t.Fatalf("serve() while paused error = %v", err)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("OnData calls while paused = %d, want 0", got)
+	}
+
+	conn.ResumeRead()
+	if err := conn.serve(events); err != nil {
+		t.Fatalf("serve() after ResumeRead error = %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("OnData calls after ResumeRead = %d, want 1", got)
+	}
+
+	if err := conn.serve(events); err != nil {
+		t.Fatalf("serve() with in-flight request error = %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("OnData calls before CompleteRequest = %d, want 1", got)
+	}
+
+	conn.CompleteRequest()
+	if err := conn.serve(events); err != nil {
+		t.Fatalf("serve() after CompleteRequest error = %v", err)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("OnData calls after CompleteRequest = %d, want 2", got)
+	}
+}
+
+func TestWriteLeaseRetainsOwnershipUntilFlushSafe(t *testing.T) {
+	conn, _ := newCountingNetpollConnForTest()
+	payload := []byte("body")
+	var retainCalls atomic.Int32
+	var releaseCalls atomic.Int32
+	lease := &trackedWriteLeaseForTest{data: payload, retainCalls: &retainCalls, releaseCalls: &releaseCalls}
+
+	n, err := conn.WriteLease(lease)
+	if err != nil {
+		t.Fatalf("WriteLease() error = %v", err)
+	}
+	if n != len(payload) {
+		t.Fatalf("WriteLease() bytes = %d, want %d", n, len(payload))
+	}
+	if got := retainCalls.Load(); got != 1 {
+		t.Fatalf("Retain calls = %d, want 1", got)
+	}
+	if got := releaseCalls.Load(); got == 0 {
+		t.Fatalf("Release calls = %d, want > 0", got)
+	}
+}
+
+func TestWriteHeaderAndLeaseDoesNotDependOnReusableCallerBuffer(t *testing.T) {
+	conn, _ := newCountingNetpollConnForTest()
+	var retainCalls atomic.Int32
+	var releaseCalls atomic.Int32
+	header := []byte("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n")
+	lease := &trackedWriteLeaseForTest{data: []byte("ok"), retainCalls: &retainCalls, releaseCalls: &releaseCalls}
+
+	n, err := conn.WriteHeaderAndLease(header, lease)
+	if err != nil {
+		t.Fatalf("WriteHeaderAndLease() error = %v", err)
+	}
+	if n != len(header)+len("ok") {
+		t.Fatalf("WriteHeaderAndLease() bytes = %d, want %d", n, len(header)+len("ok"))
+	}
+	if got := retainCalls.Load(); got != 1 {
+		t.Fatalf("Retain calls = %d, want 1", got)
+	}
+	if got := releaseCalls.Load(); got == 0 {
+		t.Fatalf("Release calls = %d, want > 0", got)
+	}
+}
+
+func TestProtectedLeasePathPreservesOriginalStorageIdentity(t *testing.T) {
+	payload := []byte("payload")
+	lease := &netpollWriteLease{data: payload}
+	retained, ok := lease.Retain().(*netpollWriteLease)
+	if !ok {
+		t.Fatalf("Retain() type = %T, want *netpollWriteLease", retained)
+	}
+	if len(retained.Bytes()) == 0 {
+		t.Fatal("retained lease bytes are empty")
+	}
+	if &retained.Bytes()[0] != &payload[0] {
+		t.Fatal("retained lease does not preserve original storage identity")
 	}
 }
 

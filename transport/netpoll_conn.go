@@ -21,6 +21,8 @@ type netpollConn struct {
 	hijacked    atomic.Bool
 	closed      atomic.Bool
 	closeOnce   atomic.Bool
+	readPaused  atomic.Bool
+	inFlight    atomic.Bool
 }
 
 func newNetpollConn(conn netpoll.Connection) *netpollConn {
@@ -38,16 +40,20 @@ func (c *netpollConn) Write(p []byte) (int, error) {
 }
 
 func (c *netpollConn) WriteLease(lease WriteLease) (int, error) {
-	body := lease.Bytes()
+	retained := lease.Retain()
+	body := retained.Bytes()
 	if len(body) == 0 {
+		retained.Release()
 		lease.Release()
 		return 0, nil
 	}
 	if _, err := c.conn.Writer().WriteBinary(body); err != nil {
+		retained.Release()
 		lease.Release()
 		return 0, err
 	}
 	err := c.conn.Writer().Flush()
+	retained.Release()
 	lease.Release()
 	if err != nil {
 		return 0, err
@@ -56,21 +62,26 @@ func (c *netpollConn) WriteLease(lease WriteLease) (int, error) {
 }
 
 func (c *netpollConn) WriteHeaderAndLease(header []byte, lease WriteLease) (int, error) {
-	body := lease.Bytes()
+	retained := lease.Retain()
+	body := retained.Bytes()
 	if len(header) == 0 {
+		retained.Release()
 		return c.WriteLease(lease)
 	}
 	if _, err := c.conn.Writer().WriteBinary(header); err != nil {
+		retained.Release()
 		lease.Release()
 		return 0, err
 	}
 	if len(body) > 0 {
 		if _, err := c.conn.Writer().WriteBinary(body); err != nil {
+			retained.Release()
 			lease.Release()
 			return 0, err
 		}
 	}
 	err := c.conn.Writer().Flush()
+	retained.Release()
 	lease.Release()
 	if err != nil {
 		return 0, err
@@ -139,9 +150,11 @@ func (c *netpollConn) Discard(n int) (int, error) {
 	return n, nil
 }
 
-func (c *netpollConn) PauseRead()       {}
-func (c *netpollConn) ResumeRead()      {}
-func (c *netpollConn) CompleteRequest() {}
+func (c *netpollConn) PauseRead()  { c.readPaused.Store(true) }
+func (c *netpollConn) ResumeRead() { c.readPaused.Store(false) }
+func (c *netpollConn) CompleteRequest() {
+	c.inFlight.Store(false)
+}
 func (c *netpollConn) Close() error {
 	c.closed.Store(true)
 	return c.conn.Close()
@@ -181,8 +194,15 @@ func (c *netpollConn) serve(events Events) error {
 	if events.OnData == nil {
 		return nil
 	}
+	if c.readPaused.Load() {
+		return nil
+	}
+	if !c.inFlight.CompareAndSwap(false, true) {
+		return nil
+	}
 	err := events.OnData(c)
 	if err != nil {
+		c.inFlight.Store(false)
 		return err
 	}
 	if c.readHandler != nil {
