@@ -18,15 +18,6 @@ func scanToByte(b []byte, target byte) (int, bool) {
 	return 0, false
 }
 
-func scanToNewline(b []byte) (int, bool) {
-	for i, c := range b {
-		if c == '\r' || c == '\n' {
-			return i, true
-		}
-	}
-	return 0, false
-}
-
 func parseHTTPVersionDigits(b []byte) (uint8, uint8, bool) {
 	if len(b) < 3 || b[1] != '.' {
 		return 0, 0, false

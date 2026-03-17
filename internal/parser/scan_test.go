@@ -103,28 +103,6 @@ func TestSkipSpaces(t *testing.T) {
 	}
 }
 
-func TestScanToNewline(t *testing.T) {
-	tests := []struct {
-		name  string
-		input []byte
-		want  int
-		ok    bool
-	}{
-		{name: "carriage return", input: []byte("value\r\n"), want: 5, ok: true},
-		{name: "line feed", input: []byte("value\n"), want: 5, ok: true},
-		{name: "no newline", input: []byte("value"), want: 0, ok: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, ok := scanToNewline(tt.input)
-			if got != tt.want || ok != tt.ok {
-				t.Fatalf("scanToNewline(%q) = (%d, %v), want (%d, %v)", tt.input, got, ok, tt.want, tt.ok)
-			}
-		})
-	}
-}
-
 func TestParseHTTPVersionDigits(t *testing.T) {
 	tests := []struct {
 		name        string

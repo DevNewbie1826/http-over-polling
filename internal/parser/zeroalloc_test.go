@@ -1,6 +1,11 @@
 package parser
 
-import "testing"
+import (
+	"bufio"
+	"bytes"
+	"io"
+	"testing"
+)
 
 func runAllocs(t *testing.T, fn func() error) float64 {
 	t.Helper()
@@ -14,6 +19,50 @@ func runAllocs(t *testing.T, fn func() error) float64 {
 		t.Fatalf("unexpected Execute() error = %v", runErr)
 	}
 	return allocs
+}
+
+func runReadRequestAllocs(t *testing.T, raw []byte, readBody bool) float64 {
+	t.Helper()
+	return runAllocs(t, func() error {
+		req, err := ReadRequest(bufio.NewReader(bytes.NewReader(raw)))
+		if err != nil {
+			return err
+		}
+		if readBody && req.Body != nil {
+			if _, err := io.Copy(io.Discard, req.Body); err != nil {
+				return err
+			}
+		}
+		if req.Body != nil {
+			return req.Body.Close()
+		}
+		return nil
+	})
+}
+
+func TestReadRequestFixtureAllocations(t *testing.T) {
+	allocs := runReadRequestAllocs(t, httparserBenchmarkFixture(), true)
+
+	if allocs > 42 {
+		t.Fatalf("allocs = %v, want <= 42", allocs)
+	}
+}
+
+func TestReadRequestFixtureAllocations_ReducedHeaderPath(t *testing.T) {
+	allocs := runReadRequestAllocs(t, httparserBenchmarkFixture(), true)
+
+	if allocs > 39 {
+		t.Fatalf("allocs = %v, want <= 39", allocs)
+	}
+}
+
+func TestReadRequestSimpleGETAllocations(t *testing.T) {
+	raw := []byte("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
+	allocs := runReadRequestAllocs(t, raw, false)
+
+	if allocs > 7 {
+		t.Fatalf("allocs = %v, want <= 7", allocs)
+	}
 }
 
 func TestParserSimpleGETAllocations(t *testing.T) {

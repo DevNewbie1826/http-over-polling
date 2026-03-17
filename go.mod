@@ -4,13 +4,14 @@ go 1.25.0
 
 require (
 	github.com/cloudwego/netpoll v0.7.2
-	golang.org/x/net v0.51.0
-	golang.org/x/sys v0.41.0
+	github.com/gobwas/ws v1.4.0
+	github.com/gorilla/websocket v1.5.3
+	golang.org/x/sys v0.42.0
 )
 
 require (
-	github.com/bytedance/gopkg v0.1.3 // indirect
+	github.com/bytedance/gopkg v0.1.1 // indirect
 	github.com/cloudwego/gopkg v0.1.4 // indirect
-	github.com/stretchr/testify v1.11.1 // indirect
-	golang.org/x/text v0.34.0 // indirect
+	github.com/gobwas/httphead v0.1.0 // indirect
+	github.com/gobwas/pool v0.2.1 // indirect
 )

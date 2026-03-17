@@ -5,57 +5,6 @@ import (
 	"testing"
 )
 
-func TestParseMessageRequestNoBody(t *testing.T) {
-	result, ok := parseMessage([]byte("GET /hello HTTP/1.1\r\nHost: example.com\r\n\r\n"), REQUEST)
-	if !ok {
-		t.Fatal("parseMessage returned ok=false")
-	}
-	if result.kind != REQUEST {
-		t.Fatalf("kind = %v, want %v", result.kind, REQUEST)
-	}
-	if result.request.Method != GET {
-		t.Fatalf("method = %v, want %v", result.request.Method, GET)
-	}
-	if string(result.request.Target) != "/hello" {
-		t.Fatalf("target = %q, want %q", string(result.request.Target), "/hello")
-	}
-	if len(result.headers) != 1 || string(result.headers[0].Name) != "Host" {
-		t.Fatalf("headers = %#v, want Host header", result.headers)
-	}
-	if result.mode != bodyModeNone {
-		t.Fatalf("mode = %v, want %v", result.mode, bodyModeNone)
-	}
-}
-
-func TestParseMessageResponseNoBodyStatus(t *testing.T) {
-	result, ok := parseMessage([]byte("HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n"), RESPONSE)
-	if !ok {
-		t.Fatal("parseMessage returned ok=false")
-	}
-	if result.kind != RESPONSE {
-		t.Fatalf("kind = %v, want %v", result.kind, RESPONSE)
-	}
-	if result.response.StatusCode != 204 {
-		t.Fatalf("status = %d, want 204", result.response.StatusCode)
-	}
-	if result.mode != bodyModeNone {
-		t.Fatalf("mode = %v, want %v", result.mode, bodyModeNone)
-	}
-}
-
-func TestParseMessageRequestContentLengthBody(t *testing.T) {
-	result, ok := parseMessage([]byte("POST /upload HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello"), REQUEST)
-	if !ok {
-		t.Fatal("parseMessage returned ok=false")
-	}
-	if result.mode != bodyModeContentLength {
-		t.Fatalf("mode = %v, want %v", result.mode, bodyModeContentLength)
-	}
-	if string(result.body) != "hello" {
-		t.Fatalf("body = %q, want %q", string(result.body), "hello")
-	}
-}
-
 func TestTryFastRequestHandlesStrictChunkedFixture(t *testing.T) {
 	p := New(REQUEST)
 	input := httparserBenchmarkFixture()
@@ -82,28 +31,6 @@ func TestTryFastRequestHandlesStrictChunkedFixture(t *testing.T) {
 	}
 	if len(body) != 1 || string(body[0]) != "hello world" {
 		t.Fatalf("body = %q, want %q", body, "hello world")
-	}
-}
-
-func TestAnalyzeFastRequestRejectsDuplicateContentLength(t *testing.T) {
-	_, ok, err := analyzeFastRequest([]byte("POST / HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\na"))
-	if ok {
-		t.Fatal("ok = true, want false")
-	}
-	if err == nil {
-		t.Fatal("err = nil, want duplicate Content-Length error")
-	}
-}
-
-func TestValidateHeaderSemanticsDetectsContentLengthProblems(t *testing.T) {
-	if err := validateHeaderSemantics([]byte("GET / HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\n"), REQUEST); err == nil {
-		t.Fatal("duplicate Content-Length error = nil, want non-nil")
-	}
-	if err := validateHeaderSemantics([]byte("GET / HTTP/1.1\r\nContent-Length: nope\r\n\r\n"), REQUEST); err == nil {
-		t.Fatal("invalid Content-Length error = nil, want non-nil")
-	}
-	if err := validateHeaderSemantics([]byte("garbage"), REQUEST); err != nil {
-		t.Fatalf("validateHeaderSemantics(garbage) error = %v, want nil", err)
 	}
 }
 
@@ -284,11 +211,7 @@ func TestExecuteCleanHandlesEmptyAndPartialInput(t *testing.T) {
 	})
 }
 
-func TestValidateHeaderSemanticsResponseAndEmitParsedMessageResponse(t *testing.T) {
-	if err := validateHeaderSemantics([]byte("HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\na"), RESPONSE); err != nil {
-		t.Fatalf("validateHeaderSemantics(response) error = %v", err)
-	}
-
+func TestEmitParsedMessageResponse(t *testing.T) {
 	p := New(RESPONSE)
 	p.pending = []byte("HTTP/1.1 200 Partial\r\nX-Test: value\r\n\r\n")
 	p.statusOffset = len("Par")

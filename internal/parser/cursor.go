@@ -30,15 +30,6 @@ func (c *cursor) advance(n int) {
 	}
 }
 
-func (c *cursor) scanByte(target byte) (int, bool) {
-	for i := c.pos; i < len(c.buf); i++ {
-		if c.buf[i] == target {
-			return i - c.pos, true
-		}
-	}
-	return 0, false
-}
-
 func (c *cursor) slice(n int) []byte {
 	end := c.pos + n
 	if end > len(c.buf) {

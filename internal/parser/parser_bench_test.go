@@ -179,25 +179,6 @@ func BenchmarkParserHttparserBenchmarkFixtureNoHeaderCallbacks(b *testing.B) {
 	}
 }
 
-func BenchmarkAnalyzeFastRequestHttparserBenchmarkFixture(b *testing.B) {
-	input := httparserBenchmarkFixture()
-	b.ReportAllocs()
-	b.SetBytes(int64(len(input)))
-
-	for i := 0; i < b.N; i++ {
-		result, ok, err := analyzeFastRequest(input)
-		if err != nil {
-			b.Fatal(err)
-		}
-		if !ok {
-			b.Fatal("analyzeFastRequest unexpectedly failed for chunked fixture")
-		}
-		if result.bodyMode != bodyModeChunked {
-			b.Fatalf("bodyMode = %v, want %v", result.bodyMode, bodyModeChunked)
-		}
-	}
-}
-
 func BenchmarkTryFastChunkedRequestHttparserBenchmarkFixture(b *testing.B) {
 	input := httparserBenchmarkFixture()
 	p := New(REQUEST)

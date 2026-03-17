@@ -994,10 +994,6 @@ func (p *Parser) tryFastRequest(setting *Setting, buf []byte) (int, bool, error)
 	return len(buf), true, nil
 }
 
-func analyzeFastRequest(buf []byte) (fastRequestResult, bool, error) {
-	return analyzeFastRequestCaptured(buf, nil, nil)
-}
-
 func analyzeFastRequestCaptured(buf []byte, captured *[maxFastHeaders]headerLine, capturedCount *int) (fastRequestResult, bool, error) {
 	c := newCursor(buf)
 	line, ok := parseRequestLine(&c)
@@ -1465,11 +1461,6 @@ type messageParseResult struct {
 	err error
 }
 
-func parseMessage(buf []byte, kind ReqOrRsp) (parsedMessage, bool) {
-	msg, result := parseMessageDetailed(buf, kind)
-	return msg, result.ok && result.err == nil
-}
-
 func parseMessageDetailed(buf []byte, kind ReqOrRsp) (parsedMessage, messageParseResult) {
 	c := newCursor(buf)
 	msg := parsedMessage{kind: kind}
@@ -1579,65 +1570,6 @@ func scanCRLFBytes(b []byte) (int, bool) {
 		}
 	}
 	return 0, false
-}
-
-func validateHeaderSemantics(buf []byte, kind ReqOrRsp) error {
-	if _, ok := scanCRLFBytes(buf); !ok {
-		return nil
-	}
-	c := newCursor(buf)
-	switch kind {
-	case REQUEST:
-		if _, ok := parseRequestLine(&c); !ok {
-			return nil
-		}
-		lineEnd, ok := scanCRLF(&c)
-		if !ok {
-			return nil
-		}
-		c.advance(lineEnd + 2)
-	case RESPONSE:
-		if _, ok := parseResponseLine(&c); !ok {
-			return nil
-		}
-		lineEnd, ok := scanCRLF(&c)
-		if !ok {
-			return nil
-		}
-		c.advance(lineEnd + 2)
-	default:
-		return nil
-	}
-	seenContentLength := false
-	for {
-		if c.remaining() < 2 {
-			return nil
-		}
-		if b, _ := c.peek(); b == '\r' {
-			return nil
-		}
-		if b, _ := c.peek(); b == '\n' {
-			return nil
-		}
-		lineEnd, ok := scanCRLF(&c)
-		if !ok {
-			return nil
-		}
-		h, ok := parseHeaderLine(&c)
-		if !ok {
-			return nil
-		}
-		if equalFoldToken(h.Name, "content-length") {
-			if seenContentLength {
-				return fmt.Errorf("duplicate Content-Length")
-			}
-			if _, ok := parseDecimalInt32(h.Value); !ok {
-				return fmt.Errorf("invalid Content-Length: %q", h.Value)
-			}
-			seenContentLength = true
-		}
-		c.advance(lineEnd + 2)
-	}
 }
 
 func applyHeaderMeta(meta *messageMeta, h headerLine) bool {

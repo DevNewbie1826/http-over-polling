@@ -16,15 +16,7 @@ var (
 )
 
 var (
-	bytesComma                  = []byte(",")
-	bytesContentLength          = []byte("Content-Length")
-	bytesTransferEncoding       = []byte("Transfer-Encoding")
-	bytesChunked                = []byte("chunked")
-	bytesConnection             = []byte("Connection")
-	bytesClose                  = []byte("close")
-	bytesUpgrade                = []byte("upgrade")
-	bytesSpace                  = []byte(" ")
-	MaxHeaderSize         int32 = 4096
+	MaxHeaderSize int32 = 4096
 )
 
 const unsetContentLength = -1

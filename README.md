@@ -6,247 +6,268 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/DevNewbie1826/http-over-polling.svg)](https://pkg.go.dev/github.com/DevNewbie1826/http-over-polling)
 [![Go Version](https://img.shields.io/badge/go-1.25+-00ADD8?logo=go)](https://go.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![Examples Module](https://img.shields.io/badge/examples-separate%20module-0A7B83)](./examples)
 
-A `net/http`-compatible HTTP stack on top of `cloudwego/netpoll`.
+`http-over-polling` is a `net/http`-compatible experiment built on top of `cloudwego/netpoll`.
 
-If you want to keep normal handlers and framework code, but cut idle-connection goroutine growth and explore poller-driven WebSocket handling, this repo is built to show that with runnable examples and repeatable benchmarks.
+The current tree focuses on two things:
 
-> Platform note: the core transport path and bundled examples are currently intended for Linux and macOS. Windows is not a supported target at this time.
+- serving regular `net/http` handlers through an event-loop-driven transport
+- showing where poller-style handling helps, and where standard `net/http` remains competitive
 
-## Why it stands out
+The repository is strongest as a runnable playground: it ships a single example server, in-process benchmarks, and manual `wrk` reproduction steps.
 
-| What you get | Why it matters |
-|---|---|
-| Idle HTTP without per-connection goroutines on the hop path | Better fit for large idle fan-out workloads |
-| Poller-driven WebSocket examples | Avoid the usual legacy goroutine-per-connection shape |
-| `wrk` comparison against stdlib server | Easy to verify throughput claims yourself |
-| Framework compatibility examples | `chi`, `gin`, `echo` keep their normal handler model |
-| In-memory benches plus process benches | You can inspect both hot paths and end-to-end behavior |
+> Platform note: the current transport path and examples are intended for Linux and macOS. Windows is not a supported target right now.
 
 ## At a glance
 
-### Idle and WebSocket goroutine profile
+Latest local benchmark snapshot:
 
-Measured by `examples/integration/wsdemo_bench_test.go` at **4096 concurrent connections**.
+| Category | `std` | `hop` | Takeaway |
+|---|---:|---:|---|
+| `wrk` throughput | `218,662.67 req/s` | `223,689.11 req/s` | `hop` led by about `2.30%` on the bundled `/` workload |
+| `wrk` avg latency | `1.15 ms` | `1.05 ms` | `hop` averaged lower latency in this run |
+| `wrk` p99 latency | `6.02 ms` | `5.81 ms` | tail latency was slightly lower on `hop` in this run |
+| HTTP idle connections | `10000` connections / `10000` goroutines | `10000` connections / `0 observed` goroutines | `std` grows with connections; `hop` stayed near zero in this run |
+| WebSocket idle connections | `10000` connections / `10000` goroutines | `10000` connections / `0 observed` goroutines | the event-driven `hop` WS path stayed near zero in this run |
 
-| Scenario | Measured goroutines | Takeaway |
-|---|---:|---|
-| `std-idle-http` | 4096 | Idle stdlib path scales with connection count |
-| `hop-idle-http` | 0 | Idle hop path stays event-driven |
-| `std-gorilla-std` | 4096 | Standard WebSocket loop scales with connection count |
-| `hop-gorilla-std` | 8190 | Legacy Gorilla loop on hop is effectively about 2 goroutines per connection |
-| `hop-gobwas-low` | 0 | Poller-style path stays flat |
-| `hop-gobwas-high` | 0 | Poller-style path stays flat |
-| `hop-gorilla-event` | 0 | Event-driven Gorilla path stays flat |
+The `wrk` rows summarize the bundled `/` workload. The goroutine rows are process-wide observed deltas from the in-repo goroutine benchmarks, not universal guarantees. The exact commands and caveats are documented in `Benchmarking with wrk` and `In-process benchmarks`.
 
-What this means in practice:
-
-| Style | Connection model |
-|---|---|
-| Legacy WebSocket loop | Roughly 2 goroutines per connection in the measured Gorilla legacy path |
-| Poller WebSocket path | No per-connection goroutine growth in the measured scenario |
-
-Run it yourself:
-
-```bash
-cd examples
-go test ./integration -run '^$' -bench WebSocketServerGoroutines -benchmem -benchtime=1x -count=1
-```
-
-Increase the benchmark connection count:
-
-```bash
-cd examples
-WSDEMO_CONN_COUNT=128 go test ./integration -run '^$' -bench WebSocketServerGoroutines -benchmem -count=1
-```
-
-### `wrk` result on the bundled example workload
-
-Result source: `examples/.wrk-results/20260314-200547/`
-
-Command shape:
-
-```bash
-wrk -t6 -c300 -d30s http://localhost:8080
-```
-
-| Metric | `stdhttp_example` | `netpoll_example` | Delta |
-|---|---:|---:|---:|
-| Requests/sec | 112,945.52 | 229,711.12 | **2.03x** |
-| Transfer/sec | 15.62 MB/s | 31.77 MB/s | **2.03x** |
-| Avg latency | 2.57 ms | 1.23 ms | **-52%** |
-
-Headline takeaway:
-
-| Statement | Value |
-|---|---:|
-| Throughput advantage on the bundled workload | **2.03x** |
-| Additional requests/sec over stdlib | **+116,765.60 req/s** |
-| Latency improvement | **1.34 ms lower avg latency** |
-
-This is intentionally scoped evidence, not a blanket claim about every production workload.
-
-## What you can run
-
-### Example servers
-
-| Example | Purpose |
-|---|---|
-| `examples/cmd/stdhttp_example` | Baseline stdlib server |
-| `examples/cmd/netpoll_example` | Same simple workload on `hop.ListenAndServe(...)` |
-| `examples/cmd/ws_example` | Legacy and poller WebSocket styles side by side |
-| `examples/cmd/benchparity` | Shared response body/constants for fair comparisons |
-
-Run them:
-
-```bash
-cd examples && go run ./cmd/stdhttp_example
-cd examples && go run ./cmd/netpoll_example
-cd examples && go run ./cmd/ws_example
-```
-
-### WebSocket example endpoints
-
-| Endpoint | Mode |
-|---|---|
-| `/ws-gobwas-low` | Low-level event-driven |
-| `/ws-gobwas-high` | `wsutil`-based event-driven |
-| `/ws-gorilla-std` | Classic Gorilla goroutine loop |
-| `/ws-gorilla-event` | Gorilla API on poller-driven read dispatch |
-| `/sse` | Hijack-based SSE example |
-| `/file` | File serving |
-
-The point is not just that WebSockets work. The point is that you can see which styles keep the poller model and which styles fall back to legacy goroutine-heavy behavior.
-
-## Framework compatibility
-
-If you already use a normal `net/http` framework, the pitch is simple: keep your handler code, change the server path.
-
-| Framework | Status |
-|---|---|
-| `chi` | Verified |
-| `gin` | Verified |
-| `echo` | Verified |
-
-Run the compatibility tests:
-
-```bash
-cd examples
-go test ./integration -run 'TestChiCompatibility|TestGinCompatibility|TestEchoCompatibility' -count=1
-```
-
-## In-memory benches are included too
-
-This repo is not only about process-level demos.
-
-| Benchmark type | Command |
-|---|---|
-| Parser benches | `go test ./internal/parser -run '^$' -bench . -benchmem` |
-| Parser vs `net/http` | `go test ./internal/parser -run '^$' -bench 'BenchmarkParserHttparserBenchmarkFixture$|BenchmarkNetHTTPHttparserBenchmarkFixture$' -benchmem -count=5` |
-| Goroutine budget | `cd examples && go test ./integration -run '^$' -bench WebSocketServerGoroutines -benchmem -count=1` |
-| `wrk` comparison | `cd examples && ./scripts/wrk_compare.sh` |
-
-These are useful for different questions:
-
-| Question | Best benchmark |
-|---|---|
-| Is the parser path fast? | In-memory parser benches |
-| Does the server stay event-driven under idle load? | Goroutine budget bench |
-| Does the whole stack beat stdlib on the bundled workload? | `wrk` comparison |
-
-## Public API
-
-The main public entrypoint stays small:
-
-```go
-err := hop.ListenAndServe(":8080", handler)
-```
-
-Request path:
-
-1. `transport.ListenAndServe(...)`
-2. `transport.Events`
-3. `hop.NewHttpConn(...)`
-4. `internal/parser` request parsing
-5. `http.Handler` execution
-
-## Core layout
+## What is in this repo
 
 | Path | Role |
 |---|---|
-| `hop/` | `net/http`-compatible HTTP layer |
-| `transport/` | netpoll-backed I/O and connection lifecycle |
-| `internal/parser/` | parser implementation detail |
-| `internal/tcplisten/` | listener helpers |
-| `internal/bytebufferpool/` | buffer helper used by the core |
-| `examples/` | demos, compatibility tests, benchmark drivers |
+| `server/` | top-level server wrapper around `cloudwego/netpoll` |
+| `engine/` | request execution pipeline and connection state management |
+| `adaptor/` | `http.ResponseWriter` implementation plus hijack/read-handler bridge |
+| `appcontext/` | request-scoped connection context helpers |
+| `internal/parser/` | internal HTTP parsing implementation |
+| `examples/` | runnable server plus benchmark and example tests |
 
-## Command index
+## Quick start
 
-### Go commands
+Run the bundled example server from the repository root:
 
-| Goal | Command |
+```bash
+go run ./examples -type hop
+```
+
+Available modes:
+
+| Mode | Command | Notes |
+|---|---|---|
+| `hop` | `go run ./examples -type hop` | `netpoll`-backed server |
+| `std` | `go run ./examples -type std` | standard `net/http` baseline |
+
+The example server listens on `:1826` and also starts `pprof` on `localhost:6060`.
+
+## Example endpoints
+
+`examples/main.go` exposes these routes:
+
+| Endpoint | Purpose |
 |---|---|
-| Core test suite | `go test ./... -count=1` |
-| Core vet | `go vet ./...` |
-| Core race check | `go test -race ./transport ./hop` |
-| Parser benches | `go test ./internal/parser -run '^$' -bench . -benchmem` |
-| Parser vs `net/http` | `go test ./internal/parser -run '^$' -bench 'BenchmarkParserHttparserBenchmarkFixture$|BenchmarkNetHTTPHttparserBenchmarkFixture$' -benchmem -count=5` |
-| Examples test suite | `cd examples && go test ./... -count=1` |
-| 4096-connection goroutine bench | `cd examples && WSDEMO_CONN_COUNT=4096 go test ./integration -run '^$' -bench WebSocketServerGoroutines -benchmem -benchtime=1x -count=1` |
-| Framework compatibility check | `cd examples && go test ./integration -run 'TestChiCompatibility|TestGinCompatibility|TestEchoCompatibility' -count=1` |
+| `/` | overview page listing the demo endpoints |
+| `/ws-gobwas-low` | low-level event-driven WebSocket echo |
+| `/ws-gobwas-high` | `wsutil`-based event-driven WebSocket echo |
+| `/ws-gorilla-std` | classic Gorilla loop with a goroutine per connection |
+| `/ws-gorilla-event` | Gorilla API driven through `SetReadHandler` |
+| `/sse` | simple server-sent events stream |
+| `/file` | serves `examples/main.go` |
 
-### `wrk` commands
+The WebSocket examples intentionally show different execution styles, not just different libraries. `gobwas` and the event-driven Gorilla path stay close to the poller model; the classic Gorilla loop demonstrates the more traditional goroutine-per-connection shape.
 
-| Goal | Command |
-|---|---|
-| Manual std baseline | `cd examples && go run ./cmd/stdhttp_example` then `wrk -t6 -c300 -d30s http://localhost:8080` |
-| Manual hop run | `cd examples && go run ./cmd/netpoll_example` then `wrk -t6 -c300 -d30s http://localhost:8080` |
-| Bundled comparison script | `cd examples && ./scripts/wrk_compare.sh` |
-| Latency percentile pass | `cd examples && WITH_LATENCY=1 ./scripts/wrk_compare.sh` |
+## Current API shape
 
-## Reproducing the headline result
+There is no `hop.ListenAndServe(...)` convenience entrypoint in the current tree. The public setup pattern is explicit:
 
-If you want the same style of numbers shown above, use built binaries and the bundled script:
+```go
+package main
 
-```bash
-cd examples
-./scripts/wrk_compare.sh
+import (
+    "log"
+    "net/http"
+
+    hengine "github.com/DevNewbie1826/http-over-polling/engine"
+    hserver "github.com/DevNewbie1826/http-over-polling/server"
+)
+
+func main() {
+    mux := http.NewServeMux()
+    mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        w.Write([]byte("hello from hop"))
+    })
+
+    eng := hengine.NewEngine(mux)
+    srv := hserver.NewServer(eng)
+
+    log.Fatal(srv.Serve(":1826"))
+}
 ```
 
-If you want manual runs instead:
+Useful server options live in `server/server.go`:
+
+- `server.WithPollerNum(...)`
+- `server.WithBufferSize(...)`
+- `server.WithMaxConns(...)`
+- `server.WithKeepAliveTimeout(...)`
+- `server.WithReadTimeout(...)`
+- `server.WithWriteTimeout(...)`
+
+For upgraded or hijacked flows, `adaptor.Hijacker` exposes `SetReadHandler(...)`, which is how the event-driven WebSocket examples plug custom frame handling into the connection lifecycle.
+
+## Benchmarking with `wrk`
+
+The repository does not currently ship a `wrk_compare.sh` script. The supported flow is manual:
+
+1. start one server mode
+2. warm it up with a short `wrk` run
+3. measure it with the same `wrk` command
+4. restart in the other mode and repeat
+
+Command shape used for the measurements below:
 
 ```bash
-cd examples && go run ./cmd/stdhttp_example
-wrk -t6 -c300 -d30s http://localhost:8080
-
-cd examples && go run ./cmd/netpoll_example
-wrk -t6 -c300 -d30s http://localhost:8080
+wrk -t6 -c300 -d30s --latency http://127.0.0.1:1826/
 ```
 
-If you specifically want latency percentiles as a separate measurement pass:
+Metric guide:
+
+- `Requests/sec`: completed requests per second
+- `Latency`: request-to-response time; `--latency` adds percentile output
+- `Transfer/sec`: response bytes transferred per second
+
+`wrk`'s own documentation recommends using a meaningful test duration and reading percentile output rather than only the average. These numbers were taken locally on the same machine as the server, so treat them as directional measurements for this workload, not universal claims.
+
+This comparison is for the bundled example configurations, not a transport-only micro-comparison. In the current tree, `hop` runs through `server.NewServer(...)` with explicit `WithPollerNum`, `WithBufferSize`, and zero timeout settings, and the server path also uses the listener configuration in `server/server.go`. The `std` baseline is the plain `http.ListenAndServe(...)` path from `examples/main.go`.
+
+### Latest local `wrk` result
+
+Measured on 2026-03-17 against the `/` handler in `examples/main.go`, after a 5 second warm-up for each mode.
+
+| Metric | `std` | `hop` | Delta (`hop` vs `std`) |
+|---|---:|---:|---:|
+| Requests/sec | 218,662.67 | 223,689.11 | **+2.30%** |
+| Transfer/sec | 95.51 MB/s | 97.70 MB/s | **+2.29%** |
+| Avg latency | 1.15 ms | 1.05 ms | **-8.70%** |
+| P50 latency | 711 us | 722 us | **+1.55%** |
+| P99 latency | 6.02 ms | 5.81 ms | **-3.49%** |
+
+What this current measurement says:
+
+- on the bundled root-handler workload, `hop` now edges out `std` in throughput
+- the gap is modest, so the interesting part is not a huge headline multiplier
+- the stronger story in this repository is still execution model control, especially for upgraded or long-lived connections
+- percentile results are mixed: `hop` improves average and `p99` here, while `p50` is effectively flat to slightly worse
+
+If you want to rerun it yourself:
 
 ```bash
-cd examples
-WITH_LATENCY=1 ./scripts/wrk_compare.sh
+# std
+go run ./examples -type std
+wrk -t6 -c300 -d5s http://127.0.0.1:1826/
+wrk -t6 -c300 -d30s --latency http://127.0.0.1:1826/
+
+# hop
+go run ./examples -type hop
+wrk -t6 -c300 -d5s http://127.0.0.1:1826/
+wrk -t6 -c300 -d30s --latency http://127.0.0.1:1826/
 ```
 
-## Honest scope
+## In-process benchmarks
 
-This project is strongest when described this way:
+For faster iteration, the example package also includes Go benchmarks:
 
-- it shows a real goroutine-usage difference between legacy and poller-driven connection handling
-- it ships a local `wrk` workload where the hop path can outperform the stdlib baseline
-- it proves compatibility with existing `net/http` frameworks
-- it gives you enough examples and benches to rerun the claims yourself
+```bash
+go test ./examples -run '^$' -bench '^BenchmarkServer_(Standard|Hop)_HTTP$|^BenchmarkServer_Standard_WS$' -benchmem -count=1
+go test ./examples -run '^$' -bench '^BenchmarkServer_Standard_HTTP_Goroutines$' -benchmem -benchtime=1x -count=1
+go test ./examples -run '^$' -bench '^BenchmarkServer_Hop_HTTP_Goroutines$' -benchmem -benchtime=1x -count=1
+go test ./examples -run '^$' -bench '^BenchmarkServer_Standard_WS_Goroutines$' -benchmem -benchtime=1x -count=1
+go test ./examples -run '^$' -bench '^BenchmarkServer_Hop_WS_Goroutines$' -benchmem -benchtime=1x -count=1
+```
 
-That is more persuasive than a generic "faster than net/http" slogan, because the evidence is shipped with the code.
+The goroutine benchmarks open as many idle connections as the current process can sustain for that benchmark run. By default they derive a target from the open-file limit and the local ephemeral port range, then report the number of connections actually established before sampling. You can still override the target explicitly with `GOROUTINE_BENCH_CONN_COUNT`.
+
+The custom metrics mean:
+
+- `connections`: idle connections successfully established for that run
+- `goroutines`: peak additional goroutines observed above the post-startup baseline during sampling
+- `goroutines/conn`: observed goroutine delta per idle connection
+
+Use `GOROUTINE_BENCH_CONN_COUNT` to change the connection count:
+
+```bash
+GOROUTINE_BENCH_CONN_COUNT=512 go test ./examples -run '^$' -bench '^BenchmarkServer_Standard_HTTP_Goroutines$' -benchmem -benchtime=1x -count=1
+GOROUTINE_BENCH_CONN_COUNT=512 go test ./examples -run '^$' -bench '^BenchmarkServer_Hop_WS_Goroutines$' -benchmem -benchtime=1x -count=1
+```
+
+A recent local run of the throughput-focused in-process benchmarks produced:
+
+| Benchmark | Result |
+|---|---:|
+| `BenchmarkServer_Standard_HTTP` | `27,329 ns/op`, `5115 B/op`, `63 allocs/op` |
+| `BenchmarkServer_Hop_HTTP` | `32,912 ns/op`, `4852 B/op`, `62 allocs/op` |
+| `BenchmarkServer_Standard_WS` | `13,352 ns/op`, `1088 B/op`, `5 allocs/op` |
+
+That is useful context: the in-process benchmark and the external `wrk` benchmark answer different questions. If they disagree, prefer describing the workload rather than forcing one universal conclusion.
+
+A recent local run of the goroutine benchmarks, using the automatically derived maximum connection count for each individual benchmark run on this machine, produced:
+
+| Benchmark | Result |
+|---|---:|
+| `BenchmarkServer_Standard_HTTP_Goroutines` | `2865 connections`, `2865 goroutines`, `1.000 goroutines/conn` |
+| `BenchmarkServer_Hop_HTTP_Goroutines` | `8123 connections`, `0 observed goroutines`, `0 goroutines/conn` |
+| `BenchmarkServer_Standard_WS_Goroutines` | `987 connections`, `987 goroutines`, `1.000 goroutines/conn` |
+| `BenchmarkServer_Hop_WS_Goroutines` | `4382 connections`, `0 observed goroutines`, `0 goroutines/conn` |
+
+Those goroutine benchmarks are intentionally about idle connection shape, not request throughput. They are most useful as sanity checks for per-connection goroutine growth, and the `hop` values should be read as “near-zero additional goroutines observed in this run”, not as a universal structural guarantee.
+
+## Verification commands
+
+Core verification:
+
+```bash
+go test ./... -count=1
+```
+
+Targeted example checks:
+
+```bash
+go test ./examples -count=1
+go test ./examples -run '^$' -bench '^BenchmarkServer_(Standard|Hop)_HTTP$|^BenchmarkServer_Standard_WS$' -benchmem -count=1
+go test ./examples -run '^$' -bench '^BenchmarkServer_Standard_HTTP_Goroutines$' -benchmem -benchtime=1x -count=1
+go test ./examples -run '^$' -bench '^BenchmarkServer_Hop_HTTP_Goroutines$' -benchmem -benchtime=1x -count=1
+go test ./examples -run '^$' -bench '^BenchmarkServer_Standard_WS_Goroutines$' -benchmem -benchtime=1x -count=1
+go test ./examples -run '^$' -bench '^BenchmarkServer_Hop_WS_Goroutines$' -benchmem -benchtime=1x -count=1
+```
+
+If you are investigating the parser directly:
+
+```bash
+go test ./internal/parser -run '^$' -bench . -benchmem
+```
+
+## How to describe this project honestly
+
+The current repository is strongest when described this way:
+
+- it adapts `net/http` handlers onto a `cloudwego/netpoll`-backed server path
+- it includes side-by-side stdlib and poller-driven server modes in one runnable example
+- it demonstrates multiple upgraded-connection styles, including event-driven WebSocket handling
+- it gives you enough local commands to rerun both in-process and end-to-end measurements yourself
+
+What to avoid saying:
+
+- `hop` is always faster than `net/http`
+- `netpoll` removes goroutines entirely
+- one benchmark here predicts every production workload
+
+That narrower framing matches both the current code and the upstream `netpoll` positioning more closely.
 
 ## Acknowledgements
 
 This project references and learns from the ideas and implementations in:
 
+- `https://github.com/cloudwego/netpoll`
 - `https://github.com/valyala/bytebufferpool`
 - `https://github.com/valyala/fasthttp/tree/master/tcplisten`
 

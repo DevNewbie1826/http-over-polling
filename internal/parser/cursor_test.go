@@ -21,14 +21,6 @@ func TestCursorAdvanceAndRemaining(t *testing.T) {
 	}
 }
 
-func TestCursorScanByte(t *testing.T) {
-	c := newCursor([]byte("Host: example.com"))
-	idx, ok := c.scanByte(':')
-	if !ok || idx != 4 {
-		t.Fatalf("scanByte = (%d, %v), want (4, true)", idx, ok)
-	}
-}
-
 func TestCursorSliceFromCurrent(t *testing.T) {
 	c := newCursor([]byte("abcdef"))
 	c.advance(2)
