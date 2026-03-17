@@ -1,9 +1,4 @@
 .DS_Store
-.serena/
-.sisyphus/
-.worktrees/
-.gitignore
-.crush
-docs/
-.wrk*
 *.out
+*.test
+*.zip
