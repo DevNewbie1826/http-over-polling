@@ -383,9 +383,11 @@ func (e *Engine) handleRequest(ctx *appcontext.RequestContext) (*http.Request, b
 	defer respWriter.Release()
 
 	if e.requestTimeout > 0 {
-		timeoutCtx, cancel := context.WithTimeout(req.Context(), e.requestTimeout)
-		req = req.WithContext(timeoutCtx)
-		defer cancel()
+		if deadline, ok := req.Context().Deadline(); !ok || time.Until(deadline) > e.requestTimeout {
+			timeoutCtx, cancel := context.WithTimeout(req.Context(), e.requestTimeout)
+			req = req.WithContext(timeoutCtx)
+			defer cancel()
+		}
 	}
 
 	var panicked bool
