@@ -231,6 +231,52 @@ func startHopHTTPBenchmarkServer(tb testing.TB, handler http.Handler) *benchmark
 	}
 }
 
+func startHopHTTPBenchmarkServerWithConfig(tb testing.TB, handler http.Handler, readTimeout time.Duration, pollerNum int, bufferSize int) *benchmarkServer {
+	tb.Helper()
+
+	eng := hengine.NewEngine(handler)
+	opts := []hserver.Option{
+		hserver.WithReadTimeout(readTimeout),
+		hserver.WithWriteTimeout(0),
+		hserver.WithPollerNum(pollerNum),
+		hserver.WithBufferSize(bufferSize),
+	}
+	srv := hserver.NewServer(eng, opts...)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		tb.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+
+	go func() {
+		if err := srv.Serve(addr); err != nil {
+			panic(err)
+		}
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		conn, err := net.DialTimeout("tcp", addr, 50*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			tb.Fatalf("hop server did not start listening on %s: %v", addr, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	return &benchmarkServer{
+		addr: addr,
+		shutdown: func(ctx context.Context) error {
+			return srv.Shutdown(ctx)
+		},
+	}
+}
+
 func openIdleHTTPConnections(tb testing.TB, addr string, count int, strict bool) []io.Closer {
 	tb.Helper()
 
