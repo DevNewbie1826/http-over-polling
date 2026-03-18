@@ -28,6 +28,11 @@ func ReadRequest(r *bufio.Reader) (*http.Request, error) {
 		return nil, err
 	}
 
+	type parsedHeader struct {
+		key   string
+		value string
+	}
+	parsedHeaders := make([]parsedHeader, 0, 8)
 	var headers http.Header
 	meta := messageMeta{kind: REQUEST}
 	host := requestURL.Host
@@ -64,10 +69,27 @@ func ReadRequest(r *bufio.Reader) (*http.Request, error) {
 				hasConnectionKeepAlive = true
 			}
 		}
-		headers = addParsedHeader(headers, header.Name, header.Value)
+		key, ok := canonicalHeaderKey(header.Name)
+		if !ok {
+			key = canonicalHeaderKeyBytes(header.Name)
+		}
+		parsedHeaders = append(parsedHeaders, parsedHeader{key: key, value: string(header.Value)})
 	}
-	if headers == nil {
+	if len(parsedHeaders) == 0 {
 		headers = make(http.Header)
+	} else {
+		headers = make(http.Header, len(parsedHeaders))
+		firstValues := make([]string, len(parsedHeaders))
+		firstValueIdx := 0
+		for _, h := range parsedHeaders {
+			if existing, exists := headers[h.key]; exists {
+				headers[h.key] = append(existing, h.value)
+				continue
+			}
+			firstValues[firstValueIdx] = h.value
+			headers[h.key] = firstValues[firstValueIdx : firstValueIdx+1 : firstValueIdx+1]
+			firstValueIdx++
+		}
 	}
 
 	req := &http.Request{
@@ -140,18 +162,20 @@ func parseRequestURL(method Method, requestURI string) (*url.URL, error) {
 		return &url.URL{Host: requestURI}, nil
 	}
 	if len(requestURI) > 0 && requestURI[0] == '/' {
-		queryIndex := -1
+		queryIndex := 0
+		hasQuery := false
 		for i := 1; i < len(requestURI); i++ {
 			switch requestURI[i] {
 			case '%', '#':
 				goto slowPath
 			case '?':
-				if queryIndex < 0 {
+				if !hasQuery {
 					queryIndex = i
+					hasQuery = true
 				}
 			}
 		}
-		if queryIndex >= 0 {
+		if hasQuery {
 			return &url.URL{Path: requestURI[:queryIndex], RawQuery: requestURI[queryIndex+1:]}, nil
 		}
 		return &url.URL{Path: requestURI}, nil
@@ -206,12 +230,21 @@ func addParsedHeader(headers http.Header, name, value []byte) http.Header {
 	if headers == nil {
 		headers = make(http.Header, 4)
 	}
+	v := string(value)
 	if canonical, ok := canonicalHeaderKey(name); ok {
-		headers[canonical] = append(headers[canonical], string(value))
+		if existing, exists := headers[canonical]; exists {
+			headers[canonical] = append(existing, v)
+		} else {
+			headers[canonical] = []string{v}
+		}
 		return headers
 	}
 	key := canonicalHeaderKeyBytes(name)
-	headers[key] = append(headers[key], string(value))
+	if existing, exists := headers[key]; exists {
+		headers[key] = append(existing, v)
+	} else {
+		headers[key] = []string{v}
+	}
 	return headers
 }
 

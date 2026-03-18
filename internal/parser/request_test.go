@@ -250,6 +250,66 @@ func TestReadRequest_UnknownHeaderCanonicalizationParity(t *testing.T) {
 	assertRequestParity(t, got, want)
 }
 
+func TestReadRequest_HeaderCanonicalizationCompatibility(t *testing.T) {
+	raw := []byte("GET / HTTP/1.1\r\nHost: example.com\r\nX-CUSTOM-header: value\r\n\r\n")
+
+	got := readRequestWithInternal(t, raw)
+	want := readRequestWithStdlib(t, raw)
+	assertRequestParity(t, got, want)
+}
+
+func TestReadRequest_DuplicateHeaderValuesPreserved(t *testing.T) {
+	raw := []byte("GET / HTTP/1.1\r\nHost: example.com\r\nX-Multi: one\r\nX-Multi: two\r\n\r\n")
+
+	got := readRequestWithInternal(t, raw)
+	want := readRequestWithStdlib(t, raw)
+	assertRequestParity(t, got, want)
+}
+
+func TestReadRequest_UnknownHeaderRoundTrip(t *testing.T) {
+	raw := []byte("GET / HTTP/1.1\r\nHost: example.com\r\nX-Strange-Header-Name: qwerty\r\n\r\n")
+
+	got := readRequestWithInternal(t, raw)
+	want := readRequestWithStdlib(t, raw)
+	assertRequestParity(t, got, want)
+}
+
+func TestParseRequestURL_PathOnly(t *testing.T) {
+	got, err := parseRequestURL(GET, "/simple")
+	if err != nil {
+		t.Fatalf("parseRequestURL() error = %v", err)
+	}
+	if got.Path != "/simple" {
+		t.Fatalf("Path = %q, want %q", got.Path, "/simple")
+	}
+	if got.RawQuery != "" {
+		t.Fatalf("RawQuery = %q, want empty", got.RawQuery)
+	}
+}
+
+func TestParseRequestURL_PathAndQuery(t *testing.T) {
+	got, err := parseRequestURL(GET, "/simple?q=1&x=y")
+	if err != nil {
+		t.Fatalf("parseRequestURL() error = %v", err)
+	}
+	if got.Path != "/simple" {
+		t.Fatalf("Path = %q, want %q", got.Path, "/simple")
+	}
+	if got.RawQuery != "q=1&x=y" {
+		t.Fatalf("RawQuery = %q, want %q", got.RawQuery, "q=1&x=y")
+	}
+}
+
+func TestParseRequestURL_FallbackSlowPath(t *testing.T) {
+	got, err := parseRequestURL(GET, "/x%2Fz")
+	if err != nil {
+		t.Fatalf("parseRequestURL() error = %v", err)
+	}
+	if got.EscapedPath() != "/x%2Fz" {
+		t.Fatalf("EscapedPath = %q, want %q", got.EscapedPath(), "/x%2Fz")
+	}
+}
+
 func TestReadRequest_CONNECTAuthorityAndSlashFormParity(t *testing.T) {
 	tests := []struct {
 		name string
